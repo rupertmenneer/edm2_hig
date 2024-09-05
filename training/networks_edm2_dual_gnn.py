@@ -15,7 +15,7 @@ import numpy as np
 import torch
 from torch_utils import persistence
 from torch_utils import misc
-from networks_dual_gnn import DualGNNInterface
+from training.networks_dual_gnn import DualGNNInterface
 
 #----------------------------------------------------------------------------
 # Normalize given tensor to unit magnitude with respect to the given
@@ -232,9 +232,10 @@ class UNet(torch.nn.Module):
         channel_mult        = [1,2,3,4],    # Per-resolution multipliers for the number of channels.
         channel_mult_noise  = None,         # Multiplier for noise embedding dimensionality. None = select based on channel_mult.
         channel_mult_emb    = None,         # Multiplier for final embedding dimensionality. None = select based on channel_mult.
-        num_blocks          = [2,2,4,4],    # MODIFICATION: List number of residual blocks per resolution.
+        num_blocks          = [2,2,4,4],    # MODIFICATION: List of residual blocks per resolution instead of default 3 per res.
         attn_resolutions    = [8,4],        # List of resolutions with self-attention.
         gnn_resolutions    = [32],          # MODIFICATION: List of resolutions with self-attention.
+        gnn_metadata        = None,         # MODIFICATION: Metadata for dual gnn
         label_balance       = 0.5,          # Balance between noise embedding (0) and class embedding (1).
         concat_balance      = 0.5,          # Balance between skip connections (0) and main path (1).
         **block_kwargs,                     # Arguments for Block.
@@ -284,7 +285,7 @@ class UNet(torch.nn.Module):
                 self.dec[f'{res}x{res}_block{idx}'] = Block(cin, cout, cemb, flavor='dec', attention=(res in attn_resolutions), **block_kwargs)
         self.out_conv = MPConv(cout, img_channels, kernel=[3,3])
 
-    def forward(self, x, noise_labels, class_labels):
+    def forward(self, x, noise_labels, graph, class_labels):
         # Embedding.
         emb = self.emb_noise(self.emb_fourier(noise_labels))
         if self.emb_label is not None:
@@ -295,7 +296,7 @@ class UNet(torch.nn.Module):
         x = torch.cat([x, torch.ones_like(x[:, :1])], dim=1)
         skips = []
         for name, block in self.enc.items():
-            x = block(x) if 'conv' in name else block(x, emb)
+            x = block(x) if 'conv' in name else block(x, emb, graph) # MODIFICATION: pass graph to encoder blocks
             skips.append(x)
 
         # Decoder.
@@ -314,7 +315,7 @@ class Precond(torch.nn.Module):
     def __init__(self,
         img_resolution,         # Image resolution.
         img_channels,           # Image channels.
-        label_dim,              # Class label dimensionality. 0 = unconditional.
+        label_dim       = 0,    # Class label dimensionality. 0 = unconditional.
         use_fp16        = True, # Run the model at FP16 precision?
         sigma_data      = 0.5,  # Expected standard deviation of the training data.
         logvar_channels = 128,  # Intermediate dimensionality for uncertainty estimation.
@@ -330,7 +331,7 @@ class Precond(torch.nn.Module):
         self.logvar_fourier = MPFourier(logvar_channels)
         self.logvar_linear = MPConv(logvar_channels, 1, kernel=[])
 
-    def forward(self, x, sigma, class_labels=None, force_fp32=False, return_logvar=False, **unet_kwargs):
+    def forward(self, x, sigma, graph, class_labels=None, force_fp32=False, return_logvar=False, **unet_kwargs):
         x = x.to(torch.float32)
         sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1)
         class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
@@ -344,7 +345,7 @@ class Precond(torch.nn.Module):
 
         # Run the model.
         x_in = (c_in * x).to(dtype)
-        F_x = self.unet(x_in, c_noise, class_labels, **unet_kwargs)
+        F_x = self.unet(x_in, c_noise, graph, class_labels, **unet_kwargs)
         D_x = c_skip * x + c_out * F_x.to(torch.float32)
 
         # Estimate uncertainty if requested.
