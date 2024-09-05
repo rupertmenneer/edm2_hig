@@ -55,13 +55,14 @@ class MP_GNN(torch.nn.Module):
     def __init__(self, hidden_channels, out_channels, num_gnn_layers=2,):
         super().__init__()
         self.gnn_layers = torch.nn.ModuleList()
+        self.gnn_layers.append(MPConv(hidden_channels, hidden_channels, kernel=[])) # projection layer
         for i in range(num_gnn_layers):
-            self.gnn_layers.append(MP_SAGEConv((-1,-1), hidden_channels, normalize=True))
-        self.gnn_layers.append(Linear(hidden_channels, out_channels))
+            self.gnn_layers.append(MP_SAGEConv((-1,-1), hidden_channels, normalize=True)) # gnn layers
+        self.gnn_layers.append(MPConv(hidden_channels, out_channels, kernel=[])) # output layer
 
     def forward(self, x, edge_index,):
         for block in self.gnn_layers:
-            x = block(x) if isinstance(block, Linear) else heterogenous_mp_silu(block(x, edge_index))
+            x = block(x) if isinstance(block, MPConv) else block(heterogenous_mp_silu(x), edge_index)
         return x
     
 #----------------------------------------------------------------------------
@@ -121,3 +122,30 @@ def has_uninitialized_params(model):
         if is_uninitialized_parameter(param):
             return True
     return False
+
+#----------------------------------------------------------------------------
+# Magnitude-preserving convolution or fully-connected layer (Equation 47)
+# with force weight normalization (Equation 66).
+
+@persistence.persistent_class
+class MPConv(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, kernel):
+        super().__init__()
+        self.out_channels = out_channels
+        self.weight = torch.nn.Parameter(torch.randn(out_channels, in_channels, *kernel))
+
+    def forward(self, x, gain=1):
+        w = self.weight.to(torch.float32)
+        if self.training:
+            with torch.no_grad():
+                self.weight.copy_(normalize(w)) # forced weight normalization
+        w = normalize(w) # traditional weight normalization
+        w = w * (gain / np.sqrt(w[0].numel())) # magnitude-preserving scaling
+        w = w.to(x.dtype)
+        if w.ndim == 2:
+            return x @ w.t()
+        assert w.ndim == 4
+        return torch.nn.functional.conv2d(x, w, padding=(w.shape[-1]//2,))
+    
+    def reset_parameters(self): # added reset parameters method for lazy hetero initialisation
+        torch.nn.init._no_grad_normal_(self.weight, 0, 1)
