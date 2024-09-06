@@ -15,7 +15,7 @@ import numpy as np
 import torch
 from torch_utils import persistence
 from torch_utils import misc
-from training.networks_dual_gnn import DualGNNInterface
+from training.networks_hignn import HIGnnInterface
 
 #----------------------------------------------------------------------------
 # Normalize given tensor to unit magnitude with respect to the given
@@ -111,31 +111,6 @@ class MPConv(torch.nn.Module):
         assert w.ndim == 4
         return torch.nn.functional.conv2d(x, w, padding=(w.shape[-1]//2,))
     
-#----------------------------------------------------------------------------
-# ----- MODIFICATION -----
-# Graph-Conditioned Diffusion Models for Image Synthesis
-# Magnitude-preserving Dual GNN
-# with force weight normalization (Equation 66).
-
-@persistence.persistent_class
-class MPConv(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, kernel):
-        super().__init__()
-        self.out_channels = out_channels
-        self.weight = torch.nn.Parameter(torch.randn(out_channels, in_channels, *kernel))
-
-    def forward(self, x, gain=1):
-        w = self.weight.to(torch.float32)
-        if self.training:
-            with torch.no_grad():
-                self.weight.copy_(normalize(w)) # forced weight normalization
-        w = normalize(w) # traditional weight normalization
-        w = w * (gain / np.sqrt(w[0].numel())) # magnitude-preserving scaling
-        w = w.to(x.dtype)
-        if w.ndim == 2:
-            return x @ w.t()
-        assert w.ndim == 4
-        return torch.nn.functional.conv2d(x, w, padding=(w.shape[-1]//2,))
 
 #----------------------------------------------------------------------------
 # U-Net encoder/decoder block with optional self-attention (Figure 21).
@@ -155,7 +130,7 @@ class Block(torch.nn.Module):
         res_balance         = 0.3,      # Balance between main branch (0) and residual branch (1).
         attn_balance        = 0.3,      # Balance between main branch (0) and self-attention (1).
         clip_act            = 256,      # Clip output activations. None = do not clip.
-        gnn_metadata        = None, # MODIFICATION: use dual_gnn for conditioning, if not None must supply gnn meta data for lazy initialisation
+        gnn_metadata        = None,     # MODIFICATION: use dual_gnn for conditioning, if not None must supply gnn meta data for lazy initialisation
     ):
         super().__init__()
         self.out_channels = out_channels
@@ -174,7 +149,7 @@ class Block(torch.nn.Module):
         self.conv_skip = MPConv(in_channels, out_channels, kernel=[1,1]) if in_channels != out_channels else None
         self.attn_qkv = MPConv(out_channels, out_channels * 3, kernel=[1,1]) if self.num_heads != 0 else None
         self.attn_proj = MPConv(out_channels, out_channels, kernel=[1,1]) if self.num_heads != 0 else None
-        self.dual_gnn = DualGNNInterface(gnn_metadata, out_channels) if gnn_metadata is not None else None
+        self.hignn = HIGnnInterface(gnn_metadata, out_channels) if gnn_metadata is not None else None
 
     def forward(self, x, emb, graph = None):
         # Main branch.
@@ -192,10 +167,10 @@ class Block(torch.nn.Module):
             y = torch.nn.functional.dropout(y, p=self.dropout)
         y = self.conv_res1(y)
 
-        # if dual gnn is present, apply here
+        # if hignn is present, apply here
         if self.flavor == 'enc' and graph is not None:
-            if self.dual_gnn is not None:
-                y, graph = self.dual_gnn(y, graph)
+            if self.hignn is not None:
+                y, graph = self.hignn(y, graph)
                 
         # Connect the branches.
         if self.flavor == 'dec' and self.conv_skip is not None:
@@ -234,7 +209,7 @@ class UNet(torch.nn.Module):
         channel_mult_emb    = None,         # Multiplier for final embedding dimensionality. None = select based on channel_mult.
         num_blocks          = [2,2,4,4],    # MODIFICATION: List of residual blocks per resolution instead of default 3 per res.
         attn_resolutions    = [8,4],        # List of resolutions with self-attention.
-        gnn_resolutions    = [32],          # MODIFICATION: List of resolutions with self-attention.
+        gnn_resolutions     = [32],         # MODIFICATION: List of resolutions with self-attention.
         gnn_metadata        = None,         # MODIFICATION: Metadata for dual gnn
         label_balance       = 0.5,          # Balance between noise embedding (0) and class embedding (1).
         concat_balance      = 0.5,          # Balance between skip connections (0) and main path (1).
@@ -267,7 +242,7 @@ class UNet(torch.nn.Module):
             for idx in range(num_blocks[level]):
                 cin = cout
                 cout = channels
-                self.enc[f'{res}x{res}_block{idx}'] = Block(cin, cout, cemb, flavor='enc', attention=(res in attn_resolutions), dual_gnn_layers=(res in gnn_resolutions), **block_kwargs)
+                self.enc[f'{res}x{res}_block{idx}'] = Block(cin, cout, cemb, flavor='enc', attention=(res in attn_resolutions), gnn_metadata=(gnn_metadata if res in gnn_resolutions else None), **block_kwargs)
 
         # Decoder.
         self.dec = torch.nn.ModuleDict()
