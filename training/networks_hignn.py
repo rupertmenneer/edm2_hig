@@ -1,14 +1,10 @@
 
 import torch
 import numpy as np
-from torch_utils import persistence
-
-from torch_geometric.nn import MessagePassing, to_hetero, SAGEConv, Linear, GATConv
-from torch_geometric.nn.aggr import Aggregation, MultiAggregation
-from torch_geometric.nn.aggr import Aggregation
-from torch_geometric.typing import Adj, OptPairTensor, Size, SparseTensor
-from torch_geometric.utils import spmm
 from typing import Union, Tuple
+import torch_geometric
+
+from torch_utils import persistence
 
 #----------------------------------------------------------------------------
 # Magnitude-preserving sum (Equation 88).
@@ -39,35 +35,35 @@ class HIGnnInterface(torch.nn.Module):
     ):
         super().__init__()
         gnn = MP_GNN(gnn_channels, gnn_channels, num_gnn_layers)
-        self.gnn = to_hetero(gnn, metadata, aggr="mean")
+        self.gnn = torch_geometric.nn.to_hetero(gnn, metadata, aggr="mean")
 
     def update_graph_image_nodes(self, x, graph):
         # reshape image into image nodes [B, C, H, W] -> [B * H * W, C]
         graph['image_node'].x = x.permute(0, 2, 3, 1).reshape(-1, x.shape[1]) # overwrites placeholder
         return graph
         
-    def extract_image_nodes(self, graph):
+    def extract_image_nodes(self, graph, shape):
         # reshape image nodes back into image [B * H * W, C] -> [B, C, H, W]
-        b,_,h,w = graph.image.shape
-        return graph['image_node'].x.reshape(b, h, w, -1).permute(0, 3, 1, 2) 
+        b,c,h,w = shape
+        return graph['image_node'].x.reshape(b, h, w, c).permute(0, 3, 1, 2) 
 
     def update_graph_embeddings(self, x, graph):
         # updates HeteroData object with updated GNN features   
         for key, emb in x.items():
+            print(key, emb.shape)
             graph[key].x = emb
         return graph
 
     def forward(self, x, graph):
+        print('x shape:', x.shape)
         graph = self.update_graph_image_nodes(x, graph) # update and resize image nodes on graph with current feature map
 
-        print(graph)
-        print(x.dtype, graph['image_node'].x.dtype, graph['class_node'].x.dtype,)
         y = self.gnn(graph.x_dict, graph.edge_index_dict, graph.edge_attr_dict) # pass dual graph through GNN
 
         graph = self.update_graph_embeddings(y, graph) # update graph with new embeddings
         
-        out = self.extract_image_nodes(graph) # extract and resize image nodes back to image
-
+        out = self.extract_image_nodes(graph, x.shape) # extract and resize image nodes back to image
+        print(x.shape, out.shape)
         return out, graph
 
 
@@ -79,7 +75,8 @@ class MP_GNN(torch.nn.Module):
     def __init__(self, hidden_channels, out_channels, num_gnn_layers=2,):
         super().__init__()
         self.gnn_layers = torch.nn.ModuleList()
-        # self.gnn_layers.append(MPConv(-1, hidden_channels, kernel=[])) # projection layer
+        # self.gnn_layers.append(torch_geometric.nn.Linear(-1, hidden_channels,)) # projection layer
+        self.gnn_layers.append(MPConv(-1, out_channels, kernel=[])) # output layer
         for _ in range(num_gnn_layers):
             self.gnn_layers.append(MP_HIPGnnConv((-1,-1), hidden_channels, normalize=True)) # gnn layers
         self.gnn_layers.append(MPConv(hidden_channels, out_channels, kernel=[])) # output layer
@@ -87,8 +84,8 @@ class MP_GNN(torch.nn.Module):
     def forward(self, x, edge_index, edge_attr):
         
         for block in self.gnn_layers:
-            
-            x = block(x) if isinstance(block, MPConv) else block(heterogenous_mp_silu(x), edge_index, edge_attr=edge_attr)
+            x = block(x) if isinstance(block, (MPConv, torch_geometric.nn.Linear)) else block(heterogenous_mp_silu(x), edge_index, edge_attr=edge_attr)
+
         return x
     
 #----------------------------------------------------------------------------
@@ -115,7 +112,7 @@ def heterogenous_mp_silu(x):
 # Magnitude-preserving Graph SAGE Conv
 # with force weight normalization (Equation 66 karras).
     
-class MP_HIPGnnConv(MessagePassing):
+class MP_HIPGnnConv(torch_geometric.nn.MessagePassing):
 
     def __init__(self,
                  in_channels        = Union[int, Tuple[int, int]], # input channels for L and R branches
@@ -125,11 +122,13 @@ class MP_HIPGnnConv(MessagePassing):
                  **kwargs,
         ):
         
+        self.in_channels = in_channels
+        self.out_channels = out_channels
         super().__init__(aggr, **kwargs)
 
         if isinstance(in_channels, int):
             in_channels = (in_channels, in_channels)
-        if isinstance(self.aggr_module, MultiAggregation):
+        if isinstance(self.aggr_module, torch_geometric.nn.aggr.MultiAggregation):
             aggr_out_channels = self.aggr_module.get_out_channels(
                 in_channels[0])
         else:
@@ -152,10 +151,10 @@ class MP_HIPGnnConv(MessagePassing):
 
     def forward(
         self,
-        x: Union[torch.Tensor, OptPairTensor],
-        edge_index: Adj,
-        size: Size = None,
-        edge_attr: OptPairTensor = None,
+        x: Union[torch.Tensor, torch_geometric.typing.OptPairTensor],
+        edge_index: torch_geometric.typing.Adj,
+        size: torch_geometric.typing.Size = None,
+        edge_attr: torch_geometric.typing.OptPairTensor = None,
     ) -> torch.Tensor:
         
         # access and normalize the weight matrices if lazy initialisation complete
@@ -189,10 +188,10 @@ class MP_HIPGnnConv(MessagePassing):
             return mp_cat(x_j, edge_attr)
         return x_j
     
-    def message_and_aggregate(self, adj_t: Adj, x: OptPairTensor) -> torch.Tensor:
-        if isinstance(adj_t, SparseTensor):
+    def message_and_aggregate(self, adj_t: torch_geometric.typing.Adj, x: torch_geometric.typing.OptPairTensor) -> torch.Tensor:
+        if isinstance(adj_t, torch_geometric.typing.SparseTensor):
             adj_t = adj_t.set_value(None, layout=None)
-        return spmm(adj_t, x[0], reduce=self.aggr)
+        return torch_geometric.utils.spmm(adj_t, x[0], reduce=self.aggr)
 
     def __repr__(self) -> str:
         return (f'{self.__class__.__name__}({self.in_channels}, '
