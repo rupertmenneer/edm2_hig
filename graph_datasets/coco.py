@@ -27,7 +27,7 @@ class COCOStuffDataset(HuggingFaceDataset):
     # process the image and mask, mask is resized with nearest neighbour interpolation
     def _preprocess(self, data):
         data[self.image_label_column] = np.array(self.img_tfm(data[self.image_label_column])).transpose(2, 0, 1) # rgb img
-        data[self.mask_label_column] = self.mask_tfm(torch.tensor(data[self.mask_label_column], dtype=torch.int64).unsqueeze(0)).numpy() # mask
+        data[self.mask_label_column] = self.mask_tfm(torch.tensor(data[self.mask_label_column], dtype=torch.int16).unsqueeze(0)).numpy() # mask
         return data
     
     # load the preprocessed image and mask from the coco dataset
@@ -82,12 +82,13 @@ class CocoStuffGraphDataset(GeoDataset):
     # construct a dual graph from raw data item 
     def __getitem__(self, idx: int) -> HeteroData:
 
-        data = HeteroData() # create hetero data object for dual graph
+        data = RelaxedHeteroData() # create hetero data object for dual graph
         img, mask = self.dataset[idx]
         data.image = torch.from_numpy(img[np.newaxis,...]) # add image to data object
+        data.mask = torch.from_numpy(mask[np.newaxis,...]) # add mask to data object
 
         # initialise image patch nodes
-        image_patch_placeholder = torch.zeros(self.num_image_nodes, 1)
+        image_patch_placeholder = torch.zeros(self.num_image_nodes, 1, dtype=torch.float32)
         data['image_node'].x = image_patch_placeholder
 
         # create class nodes from semantic segmentation map
@@ -102,11 +103,11 @@ class CocoStuffGraphDataset(GeoDataset):
         return data
     
     def _create_class_nodes(self, data, mask):
-        class_labels = np.array([l for l in np.unique(mask) if l != 255], dtype=np.int64)
+        class_labels = np.array([l for l in np.unique(mask) if l != 255], dtype=np.int16)
         onehots = np.zeros((len(class_labels), self.n_labels), dtype=np.float32)
         onehots[np.arange(len(class_labels)), class_labels] = 1
         onehots = np.concatenate([class_labels[...,np.newaxis], onehots], axis=1) # add class labels to onehots position 0 for convenience
-        data['class_node'].x = torch.from_numpy(onehots)
+        data['class_node'].x = torch.from_numpy(onehots).to(torch.float32)
         # densely connect class nodes
         edge_index = torch.combinations(torch.arange(6), with_replacement=False).t()
         edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1)
@@ -119,9 +120,26 @@ class CocoStuffGraphDataset(GeoDataset):
         for class_node_idx, class_label in enumerate(data['class_node'].x[:,0]):
             class_mask = np.argwhere(resized_mask == class_label) # get mask idxs for current class
             linear_image_patch_print_line_idxs = (class_mask[0] * self.grid_size + class_mask[1]).long() # linearise image node idxs
-            node_id_repeated = np.full((len(linear_image_patch_print_line_idxs),), class_node_idx, dtype=np.int64) # repeat class node idx for each patch
+            node_id_repeated = np.full((len(linear_image_patch_print_line_idxs),), class_node_idx, dtype=np.int16) # repeat class node idx for each patch
             edge_index = np.stack([node_id_repeated, linear_image_patch_print_line_idxs], axis=0)
             edges.append(edge_index)
-        class_to_image_index = np.concatenate(edges, axis=1) if edges else np.zeros((2, 0), dtype=np.int64)
+        class_to_image_index = np.concatenate(edges, axis=1) if edges else np.zeros((2, 0), dtype=np.int16)
         data['class_node', 'class_to_image', 'image_node'].edge_index = torch.from_numpy(class_to_image_index) # convert to torch
         return data
+    
+
+# ----------------------------------------------------------------------------
+import re
+class RelaxedHeteroData(HeteroData):
+    # modified to allow allow_empty flag to be passed
+    def __getattr__(self, key: str, allow_empty=True):
+        # `data.*_dict` => Link to node and edge stores.
+        # `data.*` => Link to the `_global_store`.
+        # Using `data.*_dict` is the same as using `collect()` for collecting
+        # nodes and edges features.
+        if hasattr(self._global_store, key):
+            return getattr(self._global_store, key)
+        elif bool(re.search('_dict$', key)):
+            return self.collect(key[:-5], allow_empty=allow_empty)
+        raise AttributeError(f"'{self.__class__.__name__}' has no "
+                             f"attribute '{key}'")
