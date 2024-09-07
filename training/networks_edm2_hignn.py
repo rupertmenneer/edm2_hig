@@ -168,9 +168,9 @@ class Block(torch.nn.Module):
         y = self.conv_res1(y)
 
         # if hignn is present, apply here
-        if self.flavor == 'enc' and graph is not None:
-            if self.hignn is not None:
-                y, graph = self.hignn(y, graph)
+        apply_hignn = self.flavor == 'enc' and graph is not None and self.hignn is not None
+        if apply_hignn:
+            y, graph = self.hignn(y, graph)
                 
         # Connect the branches.
         if self.flavor == 'dec' and self.conv_skip is not None:
@@ -192,6 +192,9 @@ class Block(torch.nn.Module):
         # Clip activations.
         if self.clip_act is not None:
             x = x.clip_(-self.clip_act, self.clip_act)
+        
+        if apply_hignn:
+            return x, graph
         return x
 
 #----------------------------------------------------------------------------
@@ -222,6 +225,7 @@ class UNet(torch.nn.Module):
         self.label_balance = label_balance
         self.concat_balance = concat_balance
         self.out_gain = torch.nn.Parameter(torch.zeros([]))
+        self.gnn_metadata = gnn_metadata
 
         # Embedding.
         self.emb_fourier = MPFourier(cnoise)
@@ -271,7 +275,10 @@ class UNet(torch.nn.Module):
         x = torch.cat([x, torch.ones_like(x[:, :1])], dim=1)
         skips = []
         for name, block in self.enc.items():
+            print(name, x.shape)
             x = block(x) if 'conv' in name else block(x, emb, graph) # MODIFICATION: pass graph to encoder blocks
+            if isinstance(x, tuple): # MODIFICATION: unpack graph if hignn is present
+                x, graph = x
             skips.append(x)
 
         # Decoder.
@@ -306,7 +313,7 @@ class Precond(torch.nn.Module):
         self.logvar_fourier = MPFourier(logvar_channels)
         self.logvar_linear = MPConv(logvar_channels, 1, kernel=[])
 
-    def forward(self, x, sigma, graph, class_labels=None, force_fp32=False, return_logvar=False, **unet_kwargs):
+    def forward(self, x, sigma, graph=None, class_labels=None, force_fp32=False, return_logvar=False, **unet_kwargs):
         x = x.to(torch.float32)
         sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1)
         class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
