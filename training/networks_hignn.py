@@ -34,7 +34,7 @@ class HIGnnInterface(torch.nn.Module):
         num_gnn_layers=2,
     ):
         super().__init__()
-        gnn = MP_GNN(gnn_channels, gnn_channels, num_gnn_layers)
+        gnn = MP_GNN(gnn_channels, num_gnn_layers)
         self.gnn = torch_geometric.nn.to_hetero(gnn, metadata, aggr="mean")
 
     def update_graph_image_nodes(self, x, graph):
@@ -44,18 +44,17 @@ class HIGnnInterface(torch.nn.Module):
         
     def extract_image_nodes(self, graph, shape):
         # reshape image nodes back into image [B * H * W, C] -> [B, C, H, W]
-        b,c,h,w = shape
-        return graph['image_node'].x.reshape(b, h, w, c).permute(0, 3, 1, 2) 
+        b,_,h,w = shape
+        return graph['image_node'].x.reshape(b, h, w, -1).permute(0, 3, 1, 2) 
 
     def update_graph_embeddings(self, x, graph):
         # updates HeteroData object with updated GNN features   
         for key, emb in x.items():
-            print(key, emb.shape)
             graph[key].x = emb
         return graph
 
     def forward(self, x, graph):
-        print('x shape:', x.shape)
+
         graph = self.update_graph_image_nodes(x, graph) # update and resize image nodes on graph with current feature map
 
         y = self.gnn(graph.x_dict, graph.edge_index_dict, graph.edge_attr_dict) # pass dual graph through GNN
@@ -63,7 +62,7 @@ class HIGnnInterface(torch.nn.Module):
         graph = self.update_graph_embeddings(y, graph) # update graph with new embeddings
         
         out = self.extract_image_nodes(graph, x.shape) # extract and resize image nodes back to image
-        print(x.shape, out.shape)
+
         return out, graph
 
 
@@ -72,19 +71,18 @@ class HIGnnInterface(torch.nn.Module):
 
 class MP_GNN(torch.nn.Module):
 
-    def __init__(self, hidden_channels, out_channels, num_gnn_layers=2,):
+    def __init__(self, hidden_channels, num_gnn_layers=2,):
         super().__init__()
         self.gnn_layers = torch.nn.ModuleList()
-        # self.gnn_layers.append(torch_geometric.nn.Linear(-1, hidden_channels,)) # projection layer
-        self.gnn_layers.append(MPConv(-1, out_channels, kernel=[])) # output layer
+        self.gnn_layers.append(MP_GeoLinear(-1, hidden_channels,)) # projection layer
         for _ in range(num_gnn_layers):
             self.gnn_layers.append(MP_HIPGnnConv((-1,-1), hidden_channels, normalize=True)) # gnn layers
-        self.gnn_layers.append(MPConv(hidden_channels, out_channels, kernel=[])) # output layer
+        self.gnn_layers.append(MP_GeoLinear(hidden_channels, hidden_channels,)) # output layer
 
     def forward(self, x, edge_index, edge_attr):
         
         for block in self.gnn_layers:
-            x = block(x) if isinstance(block, (MPConv, torch_geometric.nn.Linear)) else block(heterogenous_mp_silu(x), edge_index, edge_attr=edge_attr)
+            x = block(x) if isinstance(block, (MP_GeoLinear)) else block(heterogenous_mp_silu(x), edge_index, edge_attr)
 
         return x
     
@@ -134,8 +132,8 @@ class MP_HIPGnnConv(torch_geometric.nn.MessagePassing):
         else:
             aggr_out_channels = in_channels[0]
 
-        self.lin_l = MPConv(aggr_out_channels, out_channels, kernel=[])
-        self.lin_r = MPConv(in_channels[1], out_channels, kernel=[])
+        self.lin_l = MP_GeoLinear(aggr_out_channels, out_channels,)
+        self.lin_r = MP_GeoLinear(in_channels[1], out_channels, )
         self.normalize = normalize
         self.reset_parameters()
 
@@ -211,15 +209,20 @@ def has_uninitialized_params(model):
             return True
     return False
 
+
+import copy
+
 #----------------------------------------------------------------------------
 # Magnitude-preserving convolution or fully-connected layer (Equation 47)
 # with force weight normalization (Equation 66).
 
+
 @persistence.persistent_class
-class MPConv(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, kernel):
+class MP_GeoLinear(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, kernel=[]):
         super().__init__()
         self.out_channels = out_channels
+        self.in_channels = in_channels
 
         # handle lazy initialisation
         if in_channels > 0:
@@ -228,7 +231,9 @@ class MPConv(torch.nn.Module):
             self.weight = torch.nn.parameter.UninitializedParameter()
             self._hook = self.register_forward_pre_hook(
                 self.initialize_parameters)
+        self.reset_parameters()
 
+    # modifed from MPConv Karras et al. 2024
     def forward(self, x, gain=1):
         w = self.weight.to(torch.float32)
         if self.training:
@@ -242,8 +247,19 @@ class MPConv(torch.nn.Module):
         assert w.ndim == 4
         return torch.nn.functional.conv2d(x, w, padding=(w.shape[-1]//2,))
     
-    def reset_parameters(self): # added reset parameters method for lazy hetero initialisation
-        torch.nn.init._no_grad_normal_(self.weight, 0, 1)
+    def reset_parameters(self,): # added reset parameters method for lazy hetero initialisation
+        if self.in_channels > 0:
+            torch.nn.init._no_grad_normal_(self.weight, 0, 1)
+
+    # -------
+    # Lazy initialisation support adapted from torch_geometric.nn.Linear.
+
+    def __deepcopy__(self, memo):
+        # PyTorch<1.13 cannot handle deep copies of uninitialized parameters
+        out = MP_GeoLinear(self.in_channels, self.out_channels,).to(self.weight.device)
+        if self.in_channels > 0:
+            self.weight = copy.deepcopy(self.weight, memo)
+        return out
 
     @torch.no_grad()
     def initialize_parameters(self, _, input):
@@ -253,4 +269,33 @@ class MPConv(torch.nn.Module):
             self.reset_parameters()
         self._hook.remove()
         delattr(self, '_hook')
-    
+
+    def _save_to_state_dict(self, destination, prefix, keep_vars):
+        if (is_uninitialized_parameter(self.weight)
+                or torch.onnx.is_in_onnx_export() or keep_vars):
+            destination[prefix + 'weight'] = self.weight
+        else:
+            destination[prefix + 'weight'] = self.weight.detach()
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        weight = state_dict.get(prefix + 'weight', None)
+
+        if weight is not None and is_uninitialized_parameter(weight):
+            self.in_channels = -1
+            self.weight = torch.nn.parameter.UninitializedParameter()
+            if not hasattr(self, '_hook'):
+                self._hook = self.register_forward_pre_hook(
+                    self.initialize_parameters)
+
+        elif weight is not None and is_uninitialized_parameter(self.weight):
+            self.in_channels = weight.size(-1)
+            self.weight.materialize((self.out_channels, self.in_channels))
+            if hasattr(self, '_hook'):
+                self._hook.remove()
+                delattr(self, '_hook')
+
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
+    def __repr__(self) -> str:
+        return (f'{self.__class__.__name__}({self.in_channels}, '
+                f'{self.out_channels},)')
