@@ -4,6 +4,8 @@ import numpy as np
 from typing import Union, Tuple
 import torch_geometric
 
+from torch_geometric.nn import MessagePassing
+
 from torch_utils import persistence
 
 #----------------------------------------------------------------------------
@@ -56,7 +58,7 @@ class HIGnnInterface(torch.nn.Module):
     def forward(self, x, graph):
 
         graph = self.update_graph_image_nodes(x, graph) # update and resize image nodes on graph with current feature map
-
+        
         y = self.gnn(graph.x_dict, graph.edge_index_dict, graph.edge_attr_dict) # pass dual graph through GNN
 
         graph = self.update_graph_embeddings(y, graph) # update graph with new embeddings
@@ -80,10 +82,8 @@ class MP_GNN(torch.nn.Module):
         self.gnn_layers.append(MP_GeoLinear(hidden_channels, hidden_channels,)) # output layer
 
     def forward(self, x, edge_index, edge_attr):
-        
-        for block in self.gnn_layers:
-            x = block(x) if isinstance(block, (MP_GeoLinear)) else block(heterogenous_mp_silu(x), edge_index, edge_attr)
-
+        for block in self.gnn_layers:            
+            x = block(x) if isinstance(block, (MP_GeoLinear)) else block(heterogenous_mp_silu(x), edge_index=edge_index, edge_attr=edge_attr)
         return x
     
 #----------------------------------------------------------------------------
@@ -114,9 +114,9 @@ class MP_HIPGnnConv(torch_geometric.nn.MessagePassing):
 
     def __init__(self,
                  in_channels        = Union[int, Tuple[int, int]], # input channels for L and R branches
-                 out_channels       = int, # output channels
-                 normalize          = True, # normalise output features
-                 aggr              = "mean", # aggregation scheme
+                 out_channels       = int,                         # output channels
+                 normalize          = False,                       # normalise output features
+                 aggr               = "mean",                      # aggregation scheme
                  **kwargs,
         ):
         
@@ -160,13 +160,11 @@ class MP_HIPGnnConv(torch_geometric.nn.MessagePassing):
             self.normalise_weights('lin_l', x[0].dtype)
             self.normalise_weights('lin_r', x[0].dtype)
 
-        
         if isinstance(x, torch.Tensor):
             x = (x, x)
 
-        
         # custom MP cat propagate function to support edge attr if required
-        out = self.propagate(edge_index, x=x, edge_attr=edge_attr, size=size) # propagate with custom MP cat function if edge attribute exists
+        out = self.propagate(edge_index, x=x, edge_attr=edge_attr, size=size) # propagate (with MP-cat if edge attribute exists)
         out = self.lin_l(out) # left weight matrix
 
         x_r = x[1]
@@ -183,7 +181,8 @@ class MP_HIPGnnConv(torch_geometric.nn.MessagePassing):
 
     def message(self, x_j, edge_attr):
         if edge_attr is not None:
-            return mp_cat(x_j, edge_attr)
+            out = mp_cat(x_j, edge_attr)
+            return out
         return x_j
     
     def message_and_aggregate(self, adj_t: torch_geometric.typing.Adj, x: torch_geometric.typing.OptPairTensor) -> torch.Tensor:
@@ -251,8 +250,8 @@ class MP_GeoLinear(torch.nn.Module):
         if self.in_channels > 0:
             torch.nn.init._no_grad_normal_(self.weight, 0, 1)
 
-    # -------
-    # Lazy initialisation support adapted from torch_geometric.nn.Linear.
+    # -----------
+    # Following methods add lazy initialisation support - adapted from torch_geometric.nn.Linear.
 
     def __deepcopy__(self, memo):
         # PyTorch<1.13 cannot handle deep copies of uninitialized parameters

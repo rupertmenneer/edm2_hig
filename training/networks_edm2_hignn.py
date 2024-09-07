@@ -275,7 +275,6 @@ class UNet(torch.nn.Module):
         x = torch.cat([x, torch.ones_like(x[:, :1])], dim=1)
         skips = []
         for name, block in self.enc.items():
-            print(name, x.shape)
             x = block(x) if 'conv' in name else block(x, emb, graph) # MODIFICATION: pass graph to encoder blocks
             if isinstance(x, tuple): # MODIFICATION: unpack graph if hignn is present
                 x, graph = x
