@@ -20,6 +20,9 @@ from torch_utils import training_stats
 from torch_utils import persistence
 from torch_utils import misc
 
+import wandb
+from wandb_logging import logging_generate_sample_vis
+
 #----------------------------------------------------------------------------
 # Uncertainty-based loss function (Equations 14,15,16,21) proposed in the
 # paper "Analyzing and Improving the Training Dynamics of Diffusion Models".
@@ -32,12 +35,12 @@ class EDM2Loss:
         self.sigma_data = sigma_data
 
     def __call__(self, net, graph, labels=None):
-        images = graph.image
+        images = graph.image_latents
         rnd_normal = torch.randn([images.shape[0], 1, 1, 1], device=images.device)
         sigma = (rnd_normal * self.P_std + self.P_mean).exp()
         weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
         noise = torch.randn_like(images) * sigma
-        denoised, logvar = net(images + noise, sigma, labels, return_logvar=True)
+        denoised, logvar = net(images + noise, sigma=sigma, graph=graph, return_logvar=True)
         loss = (weight / logvar.exp()) * ((denoised - images) ** 2) + logvar
         return loss
 
@@ -68,7 +71,7 @@ def training_loop(
 
     run_dir             = '.',      # Output directory.
     seed                = 0,        # Global random seed.
-    batch_size          = 256,     # Total batch size for one training iteration.
+    batch_size          = 256,      # Total batch size for one training iteration.
     batch_gpu           = None,     # Limit batch size per GPU. None = no limit.
     total_nimg          = 8<<30,    # Train for a total of N training images.
     slice_nimg          = None,     # Train for a maximum of N training images in one invocation. None = no limit.
@@ -80,6 +83,7 @@ def training_loop(
     force_finite        = True,     # Get rid of NaN/Inf gradients before feeding them to the optimizer.
     cudnn_benchmark     = True,     # Enable torch.backends.cudnn.benchmark?
     device              = torch.device('cuda'),
+    wandb_project       = None,     # Wandb project name. None = disable wandb
 ):
     # Initialize.
     prev_status_time = time.time()
@@ -148,6 +152,10 @@ def training_loop(
     cumulative_training_time = 0
     start_nimg = state.cur_nimg
     stats_jsonl = None
+
+    if wandb_project is not None and dist.get_rank() == 0:
+        wandb.init(wandb_project)
+
     while True:
         done = (state.cur_nimg >= stop_at_nimg)
 
@@ -219,9 +227,12 @@ def training_loop(
         optimizer.zero_grad(set_to_none=True)
         for round_idx in range(num_accumulation_rounds):
             with misc.ddp_sync(ddp, (round_idx == num_accumulation_rounds - 1)):
-                images, labels = next(dataset_iterator)
-                images = encoder.encode_latents(images.to(device))
-                loss = loss_fn(net=ddp, images=images, labels=labels.to(device))
+                graph_batch = next(dataset_iterator)
+                graph_batch.image_latents = encoder.encode_latents(graph_batch.image.to(device))
+                loss = loss_fn(net=ddp, graph=graph_batch,)
+                # Log wandb images
+                if wandb_project:
+                    logging_generate_sample_vis()
                 training_stats.report('Loss/loss', loss)
                 loss.sum().mul(loss_scaling / batch_gpu_total).backward()
 
