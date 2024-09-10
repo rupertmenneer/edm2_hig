@@ -74,6 +74,8 @@ class CocoStuffGraphDataset(GeoDataset):
         # image node positions (same for every img)
         self.grid_size = self.dataset._target_resolution[0] // patch_size
         self.num_image_nodes = self.grid_size * self.grid_size
+
+        self.image_patch_positions = get_image_patch_positions(self.dataset._target_resolution[0], patch_size)
         
 
     def __len__(self) -> int:
@@ -90,6 +92,7 @@ class CocoStuffGraphDataset(GeoDataset):
         # initialise image patch nodes
         image_patch_placeholder = torch.zeros(self.num_image_nodes, 1, dtype=torch.float32)
         data['image_node'].x = image_patch_placeholder
+        data['image_node'].pos = self.image_patch_positions
 
         # create class nodes from semantic segmentation map
         self._create_class_nodes(data, mask)
@@ -117,14 +120,19 @@ class CocoStuffGraphDataset(GeoDataset):
     def _create_class_to_image_edges(self, data, mask):
         edges = []
         resized_mask = torch.nn.functional.interpolate(torch.tensor(mask[np.newaxis,...], dtype=torch.float32), size=(self.grid_size, self.grid_size), mode='nearest').squeeze() # resize mask to match compression
+        class_node_pos = []
         for class_node_idx, class_label in enumerate(data['class_node'].x[:,0]):
             class_mask = np.argwhere(resized_mask == class_label) # get mask idxs for current class
             linear_image_patch_print_line_idxs = (class_mask[0] * self.grid_size + class_mask[1]).long() # linearise image node idxs
+            class_node_position = self.image_patch_positions[linear_image_patch_print_line_idxs] # get image patch positions
+            class_node_pos.append(class_node_position.mean(dim=0))
+
             node_id_repeated = np.full((len(linear_image_patch_print_line_idxs),), class_node_idx, dtype=np.int16) # repeat class node idx for each patch
             edge_index = np.stack([node_id_repeated, linear_image_patch_print_line_idxs], axis=0)
             edges.append(edge_index)
         class_to_image_index = np.concatenate(edges, axis=1) if edges else np.zeros((2, 0), dtype=np.int16)
         data['class_node', 'class_to_image', 'image_node'].edge_index = torch.from_numpy(class_to_image_index) # convert to torch
+        data['class_node'].pos = torch.stack(class_node_pos, dim=0) # add class node positions for visualisation
         return data
     
 
@@ -133,13 +141,22 @@ import re
 class RelaxedHeteroData(HeteroData):
     # modified to allow allow_empty flag to be passed
     def __getattr__(self, key: str, allow_empty=True):
-        # `data.*_dict` => Link to node and edge stores.
-        # `data.*` => Link to the `_global_store`.
-        # Using `data.*_dict` is the same as using `collect()` for collecting
-        # nodes and edges features.
         if hasattr(self._global_store, key):
             return getattr(self._global_store, key)
         elif bool(re.search('_dict$', key)):
             return self.collect(key[:-5], allow_empty=allow_empty)
         raise AttributeError(f"'{self.__class__.__name__}' has no "
                              f"attribute '{key}'")
+    
+
+def get_image_patch_positions(image_size = 256, patch_size = 8) -> torch.Tensor:
+    """
+    Get the xy positions of each image patch in the image grid
+    """
+    grid_size = image_size // patch_size
+    grid_h = torch.arange(grid_size, dtype=torch.float32,)
+    grid_w = torch.arange(grid_size, dtype=torch.float32)
+    grid = torch.meshgrid(grid_w, grid_h)  # here w goes first
+    image_patch_positions = torch.stack(grid, axis=0).flatten(1).permute(1, 0)  # (num_patches, 2) 
+    image_patch_positions /= grid_size
+    return image_patch_positions
