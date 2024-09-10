@@ -112,7 +112,7 @@ class CocoStuffGraphDataset(GeoDataset):
         onehots = np.concatenate([class_labels[...,np.newaxis], onehots], axis=1) # add class labels to onehots position 0 for convenience
         data['class_node'].x = torch.from_numpy(onehots).to(torch.float32)
         # densely connect class nodes
-        edge_index = torch.combinations(torch.arange(6), with_replacement=False).t()
+        edge_index = torch.combinations(torch.arange(len(class_labels)), with_replacement=False).t()
         edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1)
         data['class_node', 'class_edge', 'class_node'].edge_index = edge_index
         return data
@@ -124,8 +124,8 @@ class CocoStuffGraphDataset(GeoDataset):
         for class_node_idx, class_label in enumerate(data['class_node'].x[:,0]):
             class_mask = np.argwhere(resized_mask == class_label) # get mask idxs for current class
             linear_image_patch_print_line_idxs = (class_mask[0] * self.grid_size + class_mask[1]).long() # linearise image node idxs
-            class_node_position = self.image_patch_positions[linear_image_patch_print_line_idxs] # get image patch positions
-            class_node_pos.append(class_node_position.mean(dim=0))
+
+            class_node_pos.append(linear_to_avg_2d_idx(linear_image_patch_print_line_idxs)) # get image patch positions
 
             node_id_repeated = np.full((len(linear_image_patch_print_line_idxs),), class_node_idx, dtype=np.int16) # repeat class node idx for each patch
             edge_index = np.stack([node_id_repeated, linear_image_patch_print_line_idxs], axis=0)
@@ -156,7 +156,12 @@ def get_image_patch_positions(image_size = 256, patch_size = 8) -> torch.Tensor:
     grid_size = image_size // patch_size
     grid_h = torch.arange(grid_size, dtype=torch.float32,)
     grid_w = torch.arange(grid_size, dtype=torch.float32)
-    grid = torch.meshgrid(grid_w, grid_h)  # here w goes first
+    grid = torch.meshgrid(grid_w, grid_h, indexing='xy')  # here w goes first
     image_patch_positions = torch.stack(grid, axis=0).flatten(1).permute(1, 0)  # (num_patches, 2) 
-    image_patch_positions /= grid_size
+    image_patch_positions *= patch_size
     return image_patch_positions
+
+def linear_to_avg_2d_idx(idx, img_width=32, patch_size=8):
+    row = torch.mean((idx // img_width).float())*patch_size
+    col = torch.mean((idx % img_width).float())*patch_size
+    return torch.tensor([col, row])
