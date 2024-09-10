@@ -60,7 +60,7 @@ def learning_rate_schedule(cur_nimg, batch_size, ref_lr=100e-4, ref_batches=70e3
 # Main training loop.
 
 def training_loop(
-    dataset_kwargs      = dict(class_name='training.dataset.CocoStuffGraphDataset', path=None),
+    dataset_kwargs      = dict(class_name='graph_datasets.coco.CocoStuffGraphDataset',),
     encoder_kwargs      = dict(class_name='training.encoders.StabilityVAEEncoder'),
     data_loader_kwargs  = dict(class_name='torch_geometric.loader.DataLoader', pin_memory=True, num_workers=2, prefetch_factor=2),
     network_kwargs      = dict(class_name='training.networks_edm2.Precond'),
@@ -108,12 +108,14 @@ def training_loop(
     # Setup dataset, encoder, and network.
     dist.print0('Loading dataset...')
     dataset_obj = dnnlib.util.construct_class_by_name(**dataset_kwargs)
-    ref_image, ref_label = dataset_obj[0]
+    ref_graph = dataset_obj[0]
+    ref_image = ref_graph.image
     dist.print0('Setting up encoder...')
     encoder = dnnlib.util.construct_class_by_name(**encoder_kwargs)
-    ref_image = encoder.encode_latents(torch.as_tensor(ref_image).to(device).unsqueeze(0))
+    print('ref_image', ref_image.shape)
+    ref_image = encoder.encode_latents(torch.as_tensor(ref_image).to(device))
     dist.print0('Constructing network...')
-    interface_kwargs = dict(img_resolution=ref_image.shape[-1], img_channels=ref_image.shape[1], label_dim=ref_label.shape[-1])
+    interface_kwargs = dict(img_resolution=ref_image.shape[-1], img_channels=ref_image.shape[1],)
     net = dnnlib.util.construct_class_by_name(**network_kwargs, **interface_kwargs)
     net.train().requires_grad_(True).to(device)
 
