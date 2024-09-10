@@ -133,7 +133,7 @@ class MP_HIPGnnConv(torch_geometric.nn.MessagePassing):
             aggr_out_channels = in_channels[0]
 
         self.lin_l = MP_GeoLinear(aggr_out_channels, out_channels,)
-        self.lin_r = MP_GeoLinear(in_channels[1], out_channels, )
+        self.lin_r = MP_GeoLinear(in_channels[1], out_channels,)
         self.normalize = normalize
         self.reset_parameters()
 
@@ -161,7 +161,7 @@ class MP_HIPGnnConv(torch_geometric.nn.MessagePassing):
             self.normalise_weights('lin_r', x[0].dtype)
 
         if isinstance(x, torch.Tensor):
-            x = (x, x)
+            x = (x, x) # split into two branches
 
         # custom MP cat propagate function to support edge attr if required
         out = self.propagate(edge_index, x=x, edge_attr=edge_attr, size=size) # propagate (with MP-cat if edge attribute exists)
@@ -169,9 +169,9 @@ class MP_HIPGnnConv(torch_geometric.nn.MessagePassing):
 
         x_r = x[1]
         if x_r is not None:
-            out = mp_sum(out, self.lin_r(x_r)) # apply right weight matrix and MP sum to left branch
+            out = mp_sum(out, self.lin_r(x_r)) # apply right weight matrix and MP sum to connect branches
 
-        if self.normalize:
+        if self.normalize: # optional norm on output features
             out = torch.nn.functional.normalize(out, p=2., dim=-1)
 
         return out
