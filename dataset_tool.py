@@ -186,6 +186,27 @@ def make_transform(
         crop_x = (arr.shape[1] - image_size) // 2
         return arr[crop_y: crop_y + image_size, crop_x: crop_x + image_size]
 
+    def nearest_crop(image_size: int, arr: np.ndarray):
+        """
+        Center cropping for semantic masks using NEAREST resampling to preserve label information.
+        """
+        pil_image = PIL.Image.fromarray(arr)
+
+        # Calculate scale based on the target image size
+        scale = image_size / min(*pil_image.size)
+        new_size = tuple(round(x * scale) for x in pil_image.size)
+        assert len(new_size) == 2
+
+        # Resize the image using NEAREST resampling
+        pil_image = pil_image.resize(new_size, resample=PIL.Image.Resampling.NEAREST)
+
+        # Convert back to numpy array and crop the center
+        arr = np.array(pil_image)
+        crop_y = (arr.shape[0] - image_size) // 2
+        crop_x = (arr.shape[1] - image_size) // 2
+        return arr[crop_y: crop_y + image_size, crop_x: crop_x + image_size]
+
+
     if transform is None:
         return functools.partial(scale, output_width, output_height)
     if transform == 'center-crop':
@@ -202,6 +223,12 @@ def make_transform(
         if output_width != output_height:
             raise click.ClickException('width and height must match in --resolution=WxH when using ' + transform + ' transform')
         return functools.partial(center_crop_imagenet, output_width)
+    if transform == 'nearest-crop':
+        if output_width is None or output_height is None:
+            raise click.ClickException('must specify --resolution=WxH when using ' + transform + ' transform')
+        if output_width != output_height:
+            raise click.ClickException('width and height must match in --resolution=WxH when using ' + transform + ' transform')
+        return functools.partial(nearest_crop, output_width)
     assert False, 'unknown transform'
 
 #----------------------------------------------------------------------------
@@ -263,7 +290,7 @@ def cmdline():
 @click.option('--source',     help='Input directory or archive name', metavar='PATH',   type=str, required=True)
 @click.option('--dest',       help='Output directory or archive name', metavar='PATH',  type=str, required=True)
 @click.option('--max-images', help='Maximum number of images to output', metavar='INT', type=int)
-@click.option('--transform',  help='Input crop/resize mode', metavar='MODE',            type=click.Choice(['center-crop', 'center-crop-wide', 'center-crop-dhariwal']))
+@click.option('--transform',  help='Input crop/resize mode', metavar='MODE',            type=click.Choice(['center-crop', 'center-crop-wide', 'center-crop-dhariwal', 'nearest-crop']))
 @click.option('--resolution', help='Output resolution (e.g., 512x512)', metavar='WxH',  type=parse_tuple)
 
 def convert(
