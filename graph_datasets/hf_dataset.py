@@ -20,7 +20,7 @@ class HuggingFaceDataset(Dataset):
         self._raw_shape = [len(self.dataset), 3, *target_resolution]
         super().__init__(name=dataset_name, raw_shape=self._raw_shape, **super_kwargs)
 
-    def get_standard_image_transform(self, interpolation=torchvision.transforms.InterpolationMode.BICUBIC):
+    def get_standard_image_transform(self, interpolation=torchvision.transforms.InterpolationMode.LANCZOS):
         return torchvision.transforms.Compose([
             torchvision.transforms.Resize(self._target_resolution, interpolation=interpolation),  # resize the shorter side to min target res, retaining aspect ratio
             torchvision.transforms.CenterCrop(self._target_resolution),  # center crop to target res
