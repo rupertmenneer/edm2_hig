@@ -210,7 +210,7 @@ class UNet(torch.nn.Module):
         channel_mult        = [1,2,3,4],    # Per-resolution multipliers for the number of channels.
         channel_mult_noise  = None,         # Multiplier for noise embedding dimensionality. None = select based on channel_mult.
         channel_mult_emb    = None,         # Multiplier for final embedding dimensionality. None = select based on channel_mult.
-        num_blocks          = [2,2,4,4],    # MODIFICATION: List of residual blocks per resolution instead of default 3 per res.
+        num_blocks          = [3,3,3,3],    # MODIFICATION: List of residual blocks per resolution instead of default 3 per res.
         attn_resolutions    = [8,4],        # List of resolutions with self-attention.
         gnn_resolutions     = [32],         # MODIFICATION: List of resolutions with self-attention.
         gnn_metadata        = None,         # MODIFICATION: Metadata for dual gnn
