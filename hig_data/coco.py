@@ -112,7 +112,7 @@ class COCOStuffDataset(Dataset):
         mask = self._cached_masks.get(raw_idx, None)
         if image is None:
             image = self._load_attribute_image(raw_idx, attribute='image', path=self._path)
-            mask = self._load_attribute_image(raw_idx, attribute='mask', path=self._mask_path)
+            mask = self._load_attribute_image(raw_idx, attribute='mask', path=self._mask_path)[0]
             if self._cache:
                 self._cached_images[raw_idx] = image
                 self._cached_masks[raw_idx] = mask

@@ -126,14 +126,20 @@ def visualise_het_graph_on_image(
         linewidth=1.5,
         resize_mask=False,
         return_image=False,
+        latent_images=True,
     ):
     # Set up the matplotlib figure
     dpi = 1000
     fig, ax = plt.subplots(figsize=(image_size/dpi, image_size/dpi), dpi=dpi)
 
     # Display the image with alpha transparency
-    print(hetero_data.image.shape)
-    ax.imshow(hetero_data.image.squeeze().permute(1,2,0), alpha=image_alpha)
+    img = hetero_data.image.squeeze()
+    if latent_images:
+        img = img[:3] # select first 3 channels for vis
+
+    print(img.shape)
+
+    ax.imshow(img.permute(1,2,0), alpha=image_alpha)
 
     mask = hetero_data.mask
     if resize_mask:
