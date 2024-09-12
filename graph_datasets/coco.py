@@ -1,14 +1,13 @@
-import torchvision
-import torch
-import numpy as np
-from torch_geometric.data import HeteroData
-from torch_geometric.data import Dataset as GeoDataset
 
-from graph_datasets.hf_dataset import HuggingFaceDataset
-from training.dataset import Dataset
 import os
 import zipfile
 import PIL
+import torchvision
+import torch
+import numpy as np
+from torch_geometric.data import HeteroData, Dataset as GeoDataset
+
+from training.dataset import Dataset
 
 try:
     import pyspng
@@ -126,54 +125,6 @@ class COCOStuffDataset(Dataset):
 
 
 #----------------------------------------------------------------------------
-
-"""
-Loads COCO dataset from HF.
-"""
-# RUPERT MENNEER (2024)
-#----------------------------------------------------------------------------
-
-class HFCOCOStuffDataset(HuggingFaceDataset):
-
-    def __init__(self, dataset_name='limingcv/Captioned_COCOStuff', split='train', **super_kwargs,):
-        super().__init__(dataset_name, split=split, **super_kwargs)
-
-        self.img_tfm = self.get_standard_image_transform()
-        self.mask_tfm = self.get_standard_image_transform(interpolation=torchvision.transforms.InterpolationMode.NEAREST)
-        self._cached_images = dict() # {raw_idx: np.ndarray, ...}
-        self._cached_masks = dict() # {raw_idx: np.ndarray, ...}
-        self.image_label_column = 'image'
-        self.mask_label_column = 'panoptic_seg_map'
-
-    # process the image and mask, mask is resized with nearest neighbour interpolation
-    def _preprocess(self, data):
-        data[self.image_label_column] = np.array(self.img_tfm(data[self.image_label_column])).transpose(2, 0, 1) # rgb img
-        data[self.mask_label_column] = self.mask_tfm(torch.tensor(data[self.mask_label_column], dtype=torch.int16).unsqueeze(0)).numpy() # mask
-        return data
-    
-    # load the preprocessed image and mask from the coco dataset
-    def __getitem__(self, idx):
-        raw_idx = self._raw_idx[idx]
-        image = self._cached_images.get(raw_idx, None)
-        mask = self._cached_masks.get(raw_idx, None)
-        if image is None:
-            data = self._preprocess(self.dataset[int(raw_idx)])
-            image = data[self.image_label_column]
-            mask = data[self.mask_label_column]
-            if self._cache:
-                self._cached_images[raw_idx] = image
-                self._cached_masks[raw_idx] = mask
-        assert isinstance(image, np.ndarray)
-        assert isinstance(mask, np.ndarray)
-        assert list(image.shape) == self._raw_shape[1:]
-        if self._xflip[idx]:
-            assert image.ndim == 3 # CHW
-            image = image[:, :, ::-1]
-            mask = mask[:, :, ::-1]
-        return image.copy(), mask.copy()
-    
-    def _load_raw_labels(self):
-        return self.dataset.labels
 
 """
 Models data with a dual graph representation.
