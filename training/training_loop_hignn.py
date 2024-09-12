@@ -60,13 +60,13 @@ def learning_rate_schedule(cur_nimg, batch_size, ref_lr=100e-4, ref_batches=70e3
 # Main training loop.
 
 def training_loop(
-    dataset_kwargs      = dict(class_name='graph_datasets.coco.CocoStuffGraphDataset',),
+    dataset_kwargs      = dict(class_name='hig_data.coco.CocoStuffGraphDataset',),
     encoder_kwargs      = dict(class_name='training.encoders.StabilityVAEEncoder'),
     data_loader_kwargs  = dict(class_name='torch_geometric.loader.DataLoader', pin_memory=True, num_workers=2, prefetch_factor=2),
-    network_kwargs      = dict(class_name='training.networks_edm2.Precond'),
-    loss_kwargs         = dict(class_name='training.training_loop.EDM2Loss'),
+    network_kwargs      = dict(class_name='training.networks_edm2_hignn.Precond'),
+    loss_kwargs         = dict(class_name='training.training_loop_hignn.EDM2Loss'),
     optimizer_kwargs    = dict(class_name='torch.optim.Adam', betas=(0.9, 0.99)),
-    lr_kwargs           = dict(func_name='training.training_loop.learning_rate_schedule'),
+    lr_kwargs           = dict(func_name='training.training_loop_hignn.learning_rate_schedule'),
     ema_kwargs          = dict(class_name='training.phema.PowerFunctionEMA'),
 
     run_dir             = '.',      # Output directory.
