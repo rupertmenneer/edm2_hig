@@ -103,7 +103,11 @@ class COCOStuffDataset(Dataset):
 
     def _load_attribute_image(self, raw_idx, attribute='image', path=None):
         image_name = self._fnames[attribute][raw_idx]
-        return self._load_image_from_path(image_name, path)
+        image = self._load_image_from_path(image_name, path)
+        if attribute == 'mask' and image.shape[0] != 1:
+            image = image[0:1]  # Use only the first channel
+        return image
+            
 
         # load the preprocessed image and mask from the coco dataset
     def __getitem__(self, idx):
