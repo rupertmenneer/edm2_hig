@@ -223,6 +223,7 @@ def training_loop(
                 loss = loss_fn(net=ddp, images=images, labels=labels.to(device))
                 training_stats.report('Loss/loss', loss)
                 loss.sum().mul(loss_scaling / batch_gpu_total).backward()
+                
 
         # Run optimizer and update weights.
         lr = dnnlib.util.call_func_by_name(cur_nimg=state.cur_nimg, batch_size=batch_size, **lr_kwargs)

@@ -48,7 +48,7 @@ def logging_generate_sample_vis(
         sampled_images,
         n=8,
         labels=['HIG', 'Ground Truth', 'Sampled Image'],
-        title="Sampled Images - Validation Graphs",
+        title="Sampled Images - Training Graphs",
         latent_images=True,
         **kwargs,
     ):
@@ -57,12 +57,18 @@ def logging_generate_sample_vis(
 
     # create image with ground truth graph overlay
     vae = None if not latent_images else dnnlib.util.construct_class_by_name(class_name='training.encoders.StabilityVAEEncoder')
+
+
+    sampled_images = sampled_images[:n] # take first n
+    sampled_images_pixels = sampled_images if vae is None else batch_convert_sampled_to_pixels(sampled_images, vae) # convert to pix
     graph_on_image_tensor, images = visualise_het_graph_on_image_batch(batch, n=n, vae=vae, **kwargs)
+    
+    
 
     # save to wandb
     save_image_batch_list([graph_on_image_tensor,
                            images,
-                           sampled_images,],
+                           sampled_images_pixels,],
                             row_labels=labels,
                             title=title,
                             sample_batch_size=n)
@@ -80,10 +86,12 @@ def save_image_batch_list(
         title = "Image batch"
     ):
 
+    
     cols = sample_batch_size if sample_batch_size < len(image_batch_list[0]) else len(image_batch_list[0])
     rows = len(image_batch_list)
 
-    fig = plt.figure(figsize = (cols*vis_size_factor, rows*vis_size_factor), constrained_layout=True)
+
+    fig = plt.figure(figsize = (cols*vis_size_factor, rows*vis_size_factor), constrained_layout=True, dpi=300)
     fig.suptitle(title,fontsize=10*vis_size_factor)
     fig.patch.set_facecolor('white')
 
@@ -117,6 +125,15 @@ def visualise_het_graph_on_image_batch(graph_batch, n=8, vae=None, **kwargs): # 
         images.append(graph_on_image)
     return np.concatenate(np.array(images), axis=0).transpose(0,2,3,1), np.concatenate(np.array(decoded_images), axis=0)
 
+def batch_convert_sampled_to_pixels(batch, vae):
+
+    decoded_images = []
+    for i in range(batch.shape[0]):
+        sampled_image = batch[i].unsqueeze(0)
+        pix = vae.decode(sampled_image)[0].permute(1, 2, 0).cpu().numpy()
+        decoded_images.append(pix[np.newaxis, ...])
+    return np.concatenate(np.array(decoded_images), axis=0)
+
 def convert_latents_to_pixels(std_mean, vae=None):
     if vae is None:
         vae = dnnlib.util.construct_class_by_name(class_name='training.encoders.StabilityVAEEncoder')
@@ -142,7 +159,7 @@ def visualise_het_graph_on_image(
     assert isinstance(images, np.ndarray), "Images must be a numpy array"
 
     # Set up the matplotlib figure
-    dpi = 1000
+    dpi = 300
     image_size = images.shape[0]
     fig, ax = plt.subplots(figsize=(image_size/dpi, image_size/dpi), dpi=dpi)
 
@@ -179,13 +196,13 @@ def visualise_het_graph_on_image(
     node_colors = get_node_colors(G)
 
     nodes_alphas = [0.9 if 'class_node' in n else 0. for n in G.nodes()]
-    nodes_size = [0.35 if 'class_node' in n else 0.0 for n in G.nodes()]
+    nodes_size = [0.65 if 'class_node' in n else 0.0 for n in G.nodes()]
     # Draw the graph on top of the image
     nx.draw(G, pos, with_labels=False, node_size=nodes_size, alpha=nodes_alphas, node_color=node_colors, width=linewidth, ax=ax, edgelist=[])
     
     edges = G.edges(data=True)
     edge_alphas = [0.5 if 'class_edge' in e[2]['type'] else 0.1 for e in edges]
-    edge_widths = [0.25 if 'class_edge' in e[2]['type'] else 0.1 for e in edges]
+    edge_widths = [0.65 if 'class_edge' in e[2]['type'] else 0.3 for e in edges]
     edge_styles = ['dashed' if 'class_edge' in e[2]['type'] else 'solid' for e in edges]
     edge_colors = ['black' if 'class_edge' in e[2]['type'] else 'white' for e in edges]
     

@@ -177,10 +177,6 @@ class CocoStuffGraphDataset(GeoDataset):
         # image and mask must have same resolution unless latent images enabled
         if not self.latent_compression != 1 and data.image.shape[-1] != data.mask.shape[-1]:
             raise IOError('Image and mask must have the same resolution if latent images are not enabled')
-        # resample mask if latent images enabled and image and mask have different resolutions
-        # if self.latent_images and data.image.shape[-1] != data.mask.shape[-1]:
-            # scale_factor = data.image.shape[-1] / data.mask.shape[-1]
-            # data.mask = torch.nn.functional.interpolate(data.mask, scale_factor=scale_factor, mode='nearest')
 
         # initialise image patch nodes
         image_patch_placeholder = torch.zeros(self.num_image_nodes, 1, dtype=torch.float32)
@@ -228,6 +224,24 @@ class CocoStuffGraphDataset(GeoDataset):
         data['class_node'].pos = torch.stack(class_node_pos, dim=0) # add class node positions for visualisation
         return data
     
+    @property
+    def name(self):
+        return self.dataset._name
+
+    @property
+    def image_shape(self): # [CHW]
+        return list(self.dataset._raw_shape[1:])
+
+    @property
+    def num_channels(self):
+        assert len(self.dataset.image_shape) == 3 # CHW
+        return self.dataset.image_shape[0]
+
+    @property
+    def resolution(self):
+        assert len(self.dataset.image_shape) == 3 # CHW
+        assert self.dataset.image_shape[1] == self.dataset.image_shape[2]
+        return self.dataset.image_shape[1]
 
 # ----------------------------------------------------------------------------
 import re

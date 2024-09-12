@@ -19,6 +19,7 @@ from torch_utils import distributed as dist
 from torch_utils import training_stats
 from torch_utils import persistence
 from torch_utils import misc
+import wandb
 
 from hig_data.visualisation import logging_generate_sample_vis
 from generate_images import edm_sampler
@@ -62,7 +63,7 @@ def learning_rate_schedule(cur_nimg, batch_size, ref_lr=100e-4, ref_batches=70e3
 def training_loop(
     dataset_kwargs      = dict(class_name='hig_data.coco.CocoStuffGraphDataset',),
     encoder_kwargs      = dict(class_name='training.encoders.StabilityVAEEncoder'),
-    data_loader_kwargs  = dict(class_name='torch_geometric.loader.DataLoader', pin_memory=True, num_workers=2, prefetch_factor=2),
+    data_loader_kwargs  = dict(class_name='torch_geometric.loader.DataLoader', pin_memory=True, num_workers=0, ),
     network_kwargs      = dict(class_name='training.networks_edm2_hignn.Precond'),
     loss_kwargs         = dict(class_name='training.training_loop_hignn.EDM2Loss'),
     optimizer_kwargs    = dict(class_name='torch.optim.Adam', betas=(0.9, 0.99)),
@@ -112,7 +113,6 @@ def training_loop(
     ref_image = ref_graph.image
     dist.print0('Setting up encoder...')
     encoder = dnnlib.util.construct_class_by_name(**encoder_kwargs)
-    print('ref_image', ref_image.shape)
     ref_image = encoder.encode_latents(torch.as_tensor(ref_image).to(device))
     dist.print0('Constructing network...')
     interface_kwargs = dict(img_resolution=ref_image.shape[-1], img_channels=ref_image.shape[1],)
@@ -198,11 +198,16 @@ def training_loop(
             if dist.should_stop() or dist.should_suspend():
                 done = True
 
-                        
-            if wandb_kwargs['mode'] != 'disabled':
-                graph_batch = next(dataset_iterator)
-                sampled = edm_sampler(net=ddp, noise=torch.randn_like(graph_batch.image), graph=graph_batch).permute(1, 2, 0).cpu().numpy()
-                logging_generate_sample_vis(graph_batch, sampled)
+            
+            with torch.no_grad():
+                if wandb_kwargs['mode'] != 'disabled':
+                    if wandb.run is None:
+                        wandb.init(**wandb_kwargs)
+                    graph_batch = copy.copy(next(dataset_iterator).detach())
+                    noise = torch.randn((8, net.img_channels, net.img_resolution, net.img_resolution), device=device)
+                    sampled = edm_sampler(net=ddp, noise=noise, graph=graph_batch)
+                    logging_generate_sample_vis(graph_batch, sampled)
+            
 
         # Save network snapshot.
         if snapshot_nimg is not None and state.cur_nimg % snapshot_nimg == 0 and (state.cur_nimg != start_nimg or start_nimg == 0) and dist.get_rank() == 0:
@@ -217,8 +222,6 @@ def training_loop(
                     pickle.dump(data, f)
                 dist.print0('done')
                 del data # conserve memory
-
-
 
         # Save state checkpoint.
         if checkpoint_nimg is not None and (done or state.cur_nimg % checkpoint_nimg == 0) and state.cur_nimg != start_nimg:
@@ -239,7 +242,10 @@ def training_loop(
                 graph_batch.image_latents = encoder.encode_latents(graph_batch.image.to(device))
                 loss = loss_fn(net=ddp, graph=graph_batch,)
                 training_stats.report('Loss/loss', loss)
+                if wandb.run is not None:
+                        wandb.log({"train/loss": torch.mean(loss).detach(), "nimg": state.cur_nimg})
                 loss.sum().mul(loss_scaling / batch_gpu_total).backward()
+                
 
         # Run optimizer and update weights.
         lr = dnnlib.util.call_func_by_name(cur_nimg=state.cur_nimg, batch_size=batch_size, **lr_kwargs)
