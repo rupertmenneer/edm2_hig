@@ -20,8 +20,8 @@ from torch_utils import training_stats
 from torch_utils import persistence
 from torch_utils import misc
 
-import wandb
-from wandb_logging import logging_generate_sample_vis
+from hig_data.visualisation import logging_generate_sample_vis
+from generate_images import edm_sampler
 
 #----------------------------------------------------------------------------
 # Uncertainty-based loss function (Equations 14,15,16,21) proposed in the
@@ -83,7 +83,7 @@ def training_loop(
     force_finite        = True,     # Get rid of NaN/Inf gradients before feeding them to the optimizer.
     cudnn_benchmark     = True,     # Enable torch.backends.cudnn.benchmark?
     device              = torch.device('cuda'),
-    wandb_project       = None,     # Wandb project name. None = disable wandb
+    wandb_kwargs        = dict(project='COCO_edm2_hig', mode='online',),     # Wandb project name. None = disable wandb
 ):
     # Initialize.
     prev_status_time = time.time()
@@ -155,8 +155,6 @@ def training_loop(
     start_nimg = state.cur_nimg
     stats_jsonl = None
 
-    if wandb_project is not None and dist.get_rank() == 0:
-        wandb.init(wandb_project)
 
     while True:
         done = (state.cur_nimg >= stop_at_nimg)
@@ -200,6 +198,12 @@ def training_loop(
             if dist.should_stop() or dist.should_suspend():
                 done = True
 
+                        
+            if wandb_kwargs['mode'] != 'disabled':
+                graph_batch = next(dataset_iterator)
+                sampled = edm_sampler(net=ddp, noise=torch.randn_like(graph_batch.image), graph=graph_batch).permute(1, 2, 0).cpu().numpy()
+                logging_generate_sample_vis(graph_batch, sampled)
+
         # Save network snapshot.
         if snapshot_nimg is not None and state.cur_nimg % snapshot_nimg == 0 and (state.cur_nimg != start_nimg or start_nimg == 0) and dist.get_rank() == 0:
             ema_list = ema.get() if ema is not None else optimizer.get_ema(net) if hasattr(optimizer, 'get_ema') else net
@@ -213,6 +217,8 @@ def training_loop(
                     pickle.dump(data, f)
                 dist.print0('done')
                 del data # conserve memory
+
+
 
         # Save state checkpoint.
         if checkpoint_nimg is not None and (done or state.cur_nimg % checkpoint_nimg == 0) and state.cur_nimg != start_nimg:
@@ -232,9 +238,6 @@ def training_loop(
                 graph_batch = next(dataset_iterator)
                 graph_batch.image_latents = encoder.encode_latents(graph_batch.image.to(device))
                 loss = loss_fn(net=ddp, graph=graph_batch,)
-                # Log wandb images
-                if wandb_project:
-                    logging_generate_sample_vis()
                 training_stats.report('Loss/loss', loss)
                 loss.sum().mul(loss_scaling / batch_gpu_total).backward()
 

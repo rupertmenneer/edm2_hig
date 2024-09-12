@@ -45,6 +45,7 @@ def plot_array_images(images, n=8, save_path=None):
 @torch.no_grad()
 def logging_generate_sample_vis(
         batch,
+        sampled_images,
         n=8,
         labels=['HIG', 'Ground Truth', 'Sampled Image'],
         title="Sampled Images - Validation Graphs",
@@ -57,20 +58,14 @@ def logging_generate_sample_vis(
     # create image with ground truth graph overlay
     vae = None if not latent_images else dnnlib.util.construct_class_by_name(class_name='training.encoders.StabilityVAEEncoder')
     graph_on_image_tensor, images = visualise_het_graph_on_image_batch(batch, n=n, vae=vae, **kwargs)
-    print(graph_on_image_tensor.shape, images.shape)
-
-    # sample images with graphs
-    # sampled_images = self.sample(init_graph_batch=batch, n=n)
-    sampled_images = np.zeros_like(images)
 
     # save to wandb
     save_image_batch_list([graph_on_image_tensor,
                            images,
                            sampled_images,],
-                        row_labels=labels,
-                        use_wandb=False,
-                        title=title,
-                        sample_batch_size=n)
+                            row_labels=labels,
+                            title=title,
+                            sample_batch_size=n)
 
 
 """
@@ -81,7 +76,6 @@ def save_image_batch_list(
         image_batch_list,
         row_labels,
         sample_batch_size = 8,
-        use_wandb = True,
         vis_size_factor = 8,
         title = "Image batch"
     ):
@@ -105,7 +99,7 @@ def save_image_batch_list(
             ax.imshow(ax_img)
             ax.axis('off')
 
-    if use_wandb:
+    if wandb.run is not None:
         wandb.log({f"{title}": fig})
     else:
         plt.show()
