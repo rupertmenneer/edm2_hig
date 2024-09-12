@@ -104,7 +104,7 @@ class COCOStuffDataset(Dataset):
     def _load_attribute_image(self, raw_idx, attribute='image', path=None):
         image_name = self._fnames[attribute][raw_idx]
         image = self._load_image_from_path(image_name, path)
-        if attribute == 'mask' and image.shape[0] != 1:
+        if attribute == 'mask' and image.ndim == 3:
             image = image[0:1]  # Use only the first channel
         return image
             
@@ -116,7 +116,7 @@ class COCOStuffDataset(Dataset):
         mask = self._cached_masks.get(raw_idx, None)
         if image is None:
             image = self._load_attribute_image(raw_idx, attribute='image', path=self._path)
-            mask = self._load_attribute_image(raw_idx, attribute='mask', path=self._mask_path)[0]
+            mask = self._load_attribute_image(raw_idx, attribute='mask', path=self._mask_path)
             if self._cache:
                 self._cached_images[raw_idx] = image
                 self._cached_masks[raw_idx] = mask
@@ -144,24 +144,22 @@ class CocoStuffGraphDataset(GeoDataset):
         mask_path,                    # Path to directory or zip for semantic masks.
         graph_transform=None,         # Transform to apply to the graph.
         n_labels = 182,               # Number of classes in the dataset.
-        patch_size = 8,               # Size of image patches. Set to 1 for no patches.
-        latent_images = False,        # Whether to use latent images.
+        latent_compression = 8,       # Compression factor for latent images.
         **kwargs,                     # Additional arguments for the GeoDataset base class.
     ) -> None:
 
         super().__init__(None, graph_transform)
-
-        if patch_size > 1 and not latent_images:
-            raise IOError('Patch size is more than 1 but latent images is not enabled.')
         
         self.dataset = COCOStuffDataset(image_path, mask_path)
         self.n_labels = n_labels
+        self.latent_compression = latent_compression
 
         # image node positions (same for every img)
-        self.grid_size = self.dataset._raw_shape[-1] // patch_size
+        self.grid_size = self.dataset._raw_shape[-1] # grid size for image patches 
         self.num_image_nodes = self.grid_size * self.grid_size
 
-        self.image_patch_positions = get_image_patch_positions(self.dataset._raw_shape[-1], patch_size)
+        self.image_patch_positions = get_image_patch_positions()
+            
         
 
     def __len__(self) -> int:
@@ -172,8 +170,17 @@ class CocoStuffGraphDataset(GeoDataset):
 
         data = RelaxedHeteroData() # create hetero data object for dual graph
         img, mask = self.dataset[idx]
+
         data.image = torch.from_numpy(img[np.newaxis,...]) # add image to data object
         data.mask = torch.from_numpy(mask[np.newaxis,...]) # add mask to data object
+
+        # image and mask must have same resolution unless latent images enabled
+        if not self.latent_compression != 1 and data.image.shape[-1] != data.mask.shape[-1]:
+            raise IOError('Image and mask must have the same resolution if latent images are not enabled')
+        # resample mask if latent images enabled and image and mask have different resolutions
+        # if self.latent_images and data.image.shape[-1] != data.mask.shape[-1]:
+            # scale_factor = data.image.shape[-1] / data.mask.shape[-1]
+            # data.mask = torch.nn.functional.interpolate(data.mask, scale_factor=scale_factor, mode='nearest')
 
         # initialise image patch nodes
         image_patch_placeholder = torch.zeros(self.num_image_nodes, 1, dtype=torch.float32)
@@ -211,8 +218,7 @@ class CocoStuffGraphDataset(GeoDataset):
         for class_node_idx, class_label in enumerate(data['class_node'].x[:,0]):
             class_mask = np.argwhere(resized_mask == class_label) # get mask idxs for current class
             linear_image_patch_print_line_idxs = (class_mask[0] * self.grid_size + class_mask[1]).long() # linearise image node idxs
-
-            class_node_pos.append(linear_to_avg_2d_idx(linear_image_patch_print_line_idxs)) # get image patch positions
+            class_node_pos.append(linear_to_avg_2d_idx(linear_image_patch_print_line_idxs, img_width=self.grid_size)) # get image patch positions
 
             node_id_repeated = np.full((len(linear_image_patch_print_line_idxs),), class_node_idx, dtype=np.int16) # repeat class node idx for each patch
             edge_index = np.stack([node_id_repeated, linear_image_patch_print_line_idxs], axis=0)
@@ -237,19 +243,19 @@ class RelaxedHeteroData(HeteroData):
                              f"attribute '{key}'")
     
 
-def get_image_patch_positions(image_size = 256, patch_size = 8) -> torch.Tensor:
+def get_image_patch_positions(image_size = 32, patch_size = 8) -> torch.Tensor:
     """
     Get the xy positions of each image patch in the image grid
     """
-    grid_size = image_size // patch_size
+    grid_size = image_size
     grid_h = torch.arange(grid_size, dtype=torch.float32,)
     grid_w = torch.arange(grid_size, dtype=torch.float32)
     grid = torch.meshgrid(grid_w, grid_h, indexing='xy')  # here w goes first
     image_patch_positions = torch.stack(grid, axis=0).flatten(1).permute(1, 0)  # (num_patches, 2) 
-    image_patch_positions *= patch_size
+    image_patch_positions = image_patch_positions * patch_size # scale to full res size without compression
     return image_patch_positions
 
 def linear_to_avg_2d_idx(idx, img_width=32, patch_size=8):
-    row = torch.mean((idx // img_width).float())*patch_size
-    col = torch.mean((idx % img_width).float())*patch_size
+    row = torch.mean((idx // img_width).float()) * patch_size
+    col = torch.mean((idx % img_width).float()) * patch_size
     return torch.tensor([col, row])

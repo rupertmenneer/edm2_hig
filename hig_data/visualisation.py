@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import PIL
 import networkx as nx
-
+import dnnlib
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -30,8 +30,11 @@ def plot_array_images(images, n=8, save_path=None):
 
     else:
         _, axes = plt.subplots(1, n, figsize=(10, 10), dpi=300)
-        for i in range(n):         
-            img = images[i].transpose(1, 2, 0)
+        for i in range(n):
+            img = images[i]
+            if img.shape[0] in [1, 3]: # if image is in CHW format
+                img = img.transpose(1, 2, 0)
+
             axes[i].imshow(img)
             axes[i].axis('off')
 
@@ -44,23 +47,26 @@ def logging_generate_sample_vis(
         batch,
         n=8,
         labels=['HIG', 'Ground Truth', 'Sampled Image'],
-        title="Sampled Images - Validation Graphs"
+        title="Sampled Images - Validation Graphs",
+        latent_images=True,
+        **kwargs,
     ):
 
     n = n if n < batch.image.shape[0] else batch.image.shape[0]
 
+    # create image with ground truth graph overlay
+    vae = None if not latent_images else dnnlib.util.construct_class_by_name(class_name='training.encoders.StabilityVAEEncoder')
+    graph_on_image_tensor, images = visualise_het_graph_on_image_batch(batch, n=n, vae=vae, **kwargs)
+    print(graph_on_image_tensor.shape, images.shape)
+
     # sample images with graphs
     # sampled_images = self.sample(init_graph_batch=batch, n=n)
-    sampled_images = torch.zeros_like(batch.image, device=batch.image.device)
-
-    # create image with ground truth graph overlay
-    graph_on_image_tensor = visualise_het_graph_on_image_batch(batch, n=n,)
-    print('graph_on_image_tensor', graph_on_image_tensor.shape)
+    sampled_images = np.zeros_like(images)
 
     # save to wandb
     save_image_batch_list([graph_on_image_tensor,
-                           batch.image.numpy(),
-                           sampled_images.numpy(),],
+                           images,
+                           sampled_images,],
                         row_labels=labels,
                         use_wandb=False,
                         title=title,
@@ -96,8 +102,7 @@ def save_image_batch_list(
         # create 1 * batchsize subplots per subfig
         axs = subfig.subplots(nrows=1, ncols=cols)
         for col, (ax, ax_img) in enumerate(zip(axs, image_set)):
-            img = ax_img.transpose(1, 2, 0)
-            ax.imshow(img)
+            ax.imshow(ax_img)
             ax.axis('off')
 
     if use_wandb:
@@ -106,51 +111,54 @@ def save_image_batch_list(
         plt.show()
 
 
-def visualise_het_graph_on_image_batch(graph_batch, n=8): # unpack graph batch and return list of images
+def visualise_het_graph_on_image_batch(graph_batch, n=8, vae=None, **kwargs): # unpack graph batch and return list of images
     images = []
+    decoded_images = []
     for i, graph in enumerate(graph_batch.to_data_list()):
         if i >= n:
             break
-        graph_on_image = visualise_het_graph_on_image(graph, return_image=True)[np.newaxis, ...]
+        decoded_img = graph.image if vae is None else convert_latents_to_pixels(graph.image, vae)
+        decoded_images.append(decoded_img[np.newaxis, ...])
+        graph_on_image = visualise_het_graph_on_image(graph, images=decoded_img, return_image=True, **kwargs)[np.newaxis, ...]
         images.append(graph_on_image)
-    return np.concatenate(np.array(images), axis=0)
+    return np.concatenate(np.array(images), axis=0).transpose(0,2,3,1), np.concatenate(np.array(decoded_images), axis=0)
+
+def convert_latents_to_pixels(std_mean, vae=None):
+    if vae is None:
+        vae = dnnlib.util.construct_class_by_name(class_name='training.encoders.StabilityVAEEncoder')
+    if std_mean.dim() == 3:
+        std_mean = std_mean.unsqueeze(0)
+    latents = vae.encode_latents(std_mean)
+    pix = vae.decode(latents)[0].permute(1, 2, 0).cpu().numpy()
+    return pix
 
 """Visualise HIG representation, display both underlying image and graph nodes on top
 Note: hetero_data must contain node positions for each node type"""
 def visualise_het_graph_on_image(
         hetero_data,
+        images,
         image_alpha=0.8,
         node_types=['image_node', 'class_node'],
         edge_types=[('class_node', 'class_to_image', 'image_node'), ('class_node', 'class_edge', 'class_node')],
-        image_size=256,
         linewidth=1.5,
-        resize_mask=False,
         return_image=False,
-        latent_images=True,
+        **kwargs
     ):
+
+    assert isinstance(images, np.ndarray), "Images must be a numpy array"
+
     # Set up the matplotlib figure
     dpi = 1000
+    image_size = images.shape[0]
     fig, ax = plt.subplots(figsize=(image_size/dpi, image_size/dpi), dpi=dpi)
 
-    # Display the image with alpha transparency
-    img = hetero_data.image.squeeze()
-    if latent_images:
-        img = img[:3] # select first 3 channels for vis
-
-    print(img.shape)
-
-    ax.imshow(img.permute(1,2,0), alpha=image_alpha)
+    ax.imshow(images, alpha=image_alpha)
 
     mask = hetero_data.mask
-    if resize_mask:
-        resized_mask = torch.nn.functional.interpolate(mask.float(), scale_factor=1/8, mode='nearest')
-        mask = torch.nn.functional.interpolate(resized_mask, scale_factor=8, mode='nearest')
-        
     ax.imshow(mask.squeeze(), alpha=0.45)
     
     # Create a NetworkX graph
     G = nx.Graph()
-
     # Get node positions and add them to the graph
     for node_type in node_types:
         assert hetero_data[node_type].pos is not None, f"Node type {node_type} does not have positions"
@@ -197,11 +205,11 @@ def visualise_het_graph_on_image(
             style=edge_styles[i],
         )
 
-
     ax.set_aspect("equal")
     ax.grid(False)
-    ax.set_xlim([0, hetero_data.image.shape[-1]])
-    ax.set_ylim([0, hetero_data.image.shape[-1]])
+
+    ax.set_xlim([0, image_size])
+    ax.set_ylim([0, image_size])
     ax.axis('off') 
     ax.set_facecolor('white')
     fig.patch.set_facecolor('white')
