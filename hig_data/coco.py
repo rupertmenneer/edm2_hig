@@ -41,7 +41,6 @@ class COCOStuffDataset(Dataset):
                 'image': set(self._get_zipfile(image_path).namelist()),
                 'mask': set(self._get_zipfile(mask_path).namelist())
             }
-            assert len(self._all_fnames['image']) == len(self._all_fnames['mask']), 'Different number of images and masks'
         else:
             raise IOError('Path must point to a zip')
 
@@ -54,6 +53,9 @@ class COCOStuffDataset(Dataset):
         }
         if len(self._fnames['image']) == 0:
             raise IOError('No image files found in the specified path')
+
+        if len(self._fnames['image']) != len(self._fnames['mask']):
+            raise IOError('Different number of images and masks')
 
         name = os.path.splitext(os.path.basename(self._path))[0]
         raw_shape = [len(self._fnames['image'])] + list(self._load_attribute_image(0, path=self._path).shape)
@@ -137,11 +139,17 @@ class CocoStuffGraphDataset(GeoDataset):
         image_path,                   # Path to directory or zip for images.
         mask_path,                    # Path to directory or zip for semantic masks.
         graph_transform=None,         # Transform to apply to the graph.
-        patch_size = 8,               # Size of image patches. Set to 1 for no patches.
         n_labels = 182,               # Number of classes in the dataset.
+        patch_size = 8,               # Size of image patches. Set to 1 for no patches.
+        latent_images = False,        # Whether to use latent images.
+        **kwargs,                     # Additional arguments for the GeoDataset base class.
     ) -> None:
 
         super().__init__(None, graph_transform)
+
+        if patch_size > 1 and not latent_images:
+            raise IOError('Patch size is more than 1 but latent images is not enabled.')
+        
         self.dataset = COCOStuffDataset(image_path, mask_path)
         self.n_labels = n_labels
 
@@ -181,7 +189,6 @@ class CocoStuffGraphDataset(GeoDataset):
     
     def _create_class_nodes(self, data, mask):
         class_labels = np.array([l for l in np.unique(mask) if l != 255], dtype=np.int16)
-        print(class_labels)
         onehots = np.zeros((len(class_labels), self.n_labels), dtype=np.float32)
         onehots[np.arange(len(class_labels)), class_labels] = 1
         onehots = np.concatenate([class_labels[...,np.newaxis], onehots], axis=1) # add class labels to onehots position 0 for convenience
