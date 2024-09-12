@@ -5,6 +5,15 @@ from torch_geometric.data import HeteroData
 from torch_geometric.data import Dataset as GeoDataset
 
 from graph_datasets.hf_dataset import HuggingFaceDataset
+from training.dataset import Dataset
+import os
+import zipfile
+import PIL
+
+try:
+    import pyspng
+except ImportError:
+    pyspng = None
 
 """
 Loads COCO dataset from HF.
@@ -12,7 +21,119 @@ Loads COCO dataset from HF.
 # RUPERT MENNEER (2024)
 #----------------------------------------------------------------------------
 
-class COCOStuffDataset(HuggingFaceDataset):
+class COCOStuffDataset(Dataset):
+    
+    def __init__(self,
+        image_path,                   # Path to directory or zip for images.
+        mask_path,                    # Path to directory or zip for semantic masks.
+        resolution = None,            # Ensure specific resolution, None = anything goes.
+        **super_kwargs,               # Additional arguments for the Dataset base class.
+        ):
+
+        self._path = image_path
+        self._mask_path = mask_path
+        self._zipfiles = {}  # Store zipfile references for images and masks
+        self._cached_images = dict() # {raw_idx: np.ndarray, ...}
+        self._cached_masks = dict() # {raw_idx: np.ndarray, ...}
+
+        if self._file_ext(self._path) == '.zip':
+            self._type = 'zip'
+            self._all_fnames = {
+                'image': set(self._get_zipfile(image_path).namelist()),
+                'mask': set(self._get_zipfile(mask_path).namelist())
+            }
+            assert len(self._all_fnames['image']) == len(self._all_fnames['mask']), 'Different number of images and masks'
+        else:
+            raise IOError('Path must point to a zip')
+
+        PIL.Image.init()
+        supported_ext = PIL.Image.EXTENSION.keys() | {'.npy'}
+        unspported_prefix = ['.', '__', '__MACOSX/']
+        self._fnames = {
+            'image': sorted(fname for fname in self._all_fnames['image'] if self._file_ext(fname) in supported_ext and not any(fname.startswith(prefix) for prefix in unspported_prefix)),
+            'mask': sorted(fname for fname in self._all_fnames['mask'] if self._file_ext(fname) in supported_ext and not any(fname.startswith(prefix) for prefix in unspported_prefix)),
+        }
+        if len(self._fnames['image']) == 0:
+            raise IOError('No image files found in the specified path')
+
+        name = os.path.splitext(os.path.basename(self._path))[0]
+        raw_shape = [len(self._fnames['image'])] + list(self._load_attribute_image(0, path=self._path).shape)
+        if resolution is not None and (raw_shape[2] != resolution or raw_shape[3] != resolution):
+            raise IOError('Image files do not match the specified resolution')
+        super().__init__(name=name, raw_shape=raw_shape, **super_kwargs)
+
+    @staticmethod
+    def _file_ext(fname):
+        return os.path.splitext(fname)[1].lower()
+
+    def _get_zipfile(self, path):
+        if path not in self._zipfiles:
+            self._zipfiles[path] = zipfile.ZipFile(path)
+        return self._zipfiles[path]
+
+    def _open_file(self, fname, path):
+        if self._type == 'zip':
+            return self._get_zipfile(path).open(fname, 'r')
+        return None
+
+    def close(self):
+        try:
+            if self._zipfile is not None:
+                self._zipfile.close()
+        finally:
+            self._zipfile = None
+
+    def __getstate__(self):
+        return dict(super().__getstate__(), _zipfile=None)
+
+    def _load_image_from_path(self, fname, path): # return image from fname as np.ndarray
+        ext = self._file_ext(fname)
+        with self._open_file(fname, path) as f:
+            if ext == '.npy':
+                image = np.load(f)
+                image = image.reshape(-1, *image.shape[-2:])
+            elif ext == '.png' and pyspng is not None:
+                image = pyspng.load(f.read())
+                image = image.reshape(*image.shape[:2], -1).transpose(2, 0, 1)
+            else:
+                image = np.array(PIL.Image.open(f))
+                image = image.reshape(*image.shape[:2], -1).transpose(2, 0, 1)
+        return image
+
+    def _load_attribute_image(self, raw_idx, attribute='image', path=None):
+        image_name = self._fnames[attribute][raw_idx]
+        return self._load_image_from_path(image_name, path)
+
+        # load the preprocessed image and mask from the coco dataset
+    def __getitem__(self, idx):
+        raw_idx = self._raw_idx[idx]
+        image = self._cached_images.get(raw_idx, None)
+        mask = self._cached_masks.get(raw_idx, None)
+        if image is None:
+            image = self._load_attribute_image(raw_idx, attribute='image', path=self._path)
+            mask = self._load_attribute_image(raw_idx, attribute='mask', path=self._mask_path)
+            if self._cache:
+                self._cached_images[raw_idx] = image
+                self._cached_masks[raw_idx] = mask
+        assert isinstance(image, np.ndarray)
+        assert isinstance(mask, np.ndarray)
+        assert list(image.shape) == self._raw_shape[1:]
+        if self._xflip[idx]:
+            assert image.ndim == 3 # CHW
+            image = image[:, :, ::-1]
+            mask = mask[:, :, ::-1]
+        return image.copy(), mask.copy()
+
+
+#----------------------------------------------------------------------------
+
+"""
+Loads COCO dataset from HF.
+"""
+# RUPERT MENNEER (2024)
+#----------------------------------------------------------------------------
+
+class HFCOCOStuffDataset(HuggingFaceDataset):
 
     def __init__(self, dataset_name='limingcv/Captioned_COCOStuff', split='train', **super_kwargs,):
         super().__init__(dataset_name, split=split, **super_kwargs)
@@ -62,20 +183,22 @@ Models data with a dual graph representation.
 class CocoStuffGraphDataset(GeoDataset):
 
     def __init__(self,
-        graph_transform=None,
-        patch_size = 8,
-        n_labels = 182,
+        image_path,                   # Path to directory or zip for images.
+        mask_path,                    # Path to directory or zip for semantic masks.
+        graph_transform=None,         # Transform to apply to the graph.
+        patch_size = 8,               # Size of image patches. Set to 1 for no patches.
+        n_labels = 182,               # Number of classes in the dataset.
     ) -> None:
 
         super().__init__(None, graph_transform)
-        self.dataset = COCOStuffDataset()
+        self.dataset = COCOStuffDataset(image_path, mask_path)
         self.n_labels = n_labels
 
         # image node positions (same for every img)
-        self.grid_size = self.dataset._target_resolution[0] // patch_size
+        self.grid_size = self.dataset._raw_shape[-1] // patch_size
         self.num_image_nodes = self.grid_size * self.grid_size
 
-        self.image_patch_positions = get_image_patch_positions(self.dataset._target_resolution[0], patch_size)
+        self.image_patch_positions = get_image_patch_positions(self.dataset._raw_shape[-1], patch_size)
         
 
     def __len__(self) -> int:
@@ -107,11 +230,13 @@ class CocoStuffGraphDataset(GeoDataset):
     
     def _create_class_nodes(self, data, mask):
         class_labels = np.array([l for l in np.unique(mask) if l != 255], dtype=np.int16)
+        print(class_labels)
         onehots = np.zeros((len(class_labels), self.n_labels), dtype=np.float32)
         onehots[np.arange(len(class_labels)), class_labels] = 1
         onehots = np.concatenate([class_labels[...,np.newaxis], onehots], axis=1) # add class labels to onehots position 0 for convenience
         data['class_node'].x = torch.from_numpy(onehots).to(torch.float32)
         # densely connect class nodes
+        
         edge_index = torch.combinations(torch.arange(len(class_labels)), with_replacement=False).t()
         edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1)
         data['class_node', 'class_edge', 'class_node'].edge_index = edge_index
@@ -138,6 +263,7 @@ class CocoStuffGraphDataset(GeoDataset):
 
 # ----------------------------------------------------------------------------
 import re
+
 class RelaxedHeteroData(HeteroData):
     # modified to allow allow_empty flag to be passed
     def __getattr__(self, key: str, allow_empty=True):
