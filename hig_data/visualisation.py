@@ -2,11 +2,8 @@
 import wandb
 import torch
 import matplotlib.pyplot as plt
-import numpy as np
-import PIL
 import networkx as nx
 import dnnlib
-import matplotlib.pyplot as plt
 import numpy as np
 
 # handles batch or single image, n sets number to display
@@ -82,7 +79,7 @@ def save_image_batch_list(
         image_batch_list,
         row_labels,
         sample_batch_size = 8,
-        vis_size_factor = 8,
+        vis_size_factor = 3,
         title = "Image batch"
     ):
 
@@ -228,10 +225,9 @@ def visualise_het_graph_on_image(
     if return_image:
         fig.canvas.draw()
         w, h = fig.canvas.get_width_height()
-        image = np.frombuffer(fig.canvas.buffer_rgba(), dtype='uint8').reshape(h, w, 4)
-        pil_image = np.array(PIL.Image.fromarray(image, mode='RGBA').convert('RGB')).transpose(2, 0, 1)
+        image = np.frombuffer(fig.canvas.buffer_rgba(), dtype='uint8').reshape(h, w, 4)[:,:,:3].transpose(2, 0, 1)
         plt.close()
-        return np.flip(pil_image, 1)
+        return np.flip(image, 1)
     else:
         plt.show()
         plt.axis('off')
