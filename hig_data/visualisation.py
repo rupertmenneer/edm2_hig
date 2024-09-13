@@ -165,7 +165,7 @@ def visualise_het_graph_on_image(
 
     ax.imshow(images, alpha=image_alpha)
 
-    mask = hetero_data.mask
+    mask = np.load(hetero_data.mask_path, allow_pickle=True) 
     ax.imshow(mask.squeeze(), alpha=0.45)
     
     # Create a NetworkX graph

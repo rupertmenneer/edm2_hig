@@ -259,7 +259,15 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
         super().__init__(None, graph_transform)
         
         self._path = path
+        self._cache = cache
         assert os.path.isdir(self._path), "Path must be a directory"
+
+        if cache: # cache images, masks and graphs
+            self._cached_images = dict() # {raw_idx: np.ndarray, ...}
+            self._cached_masks = dict() # {raw_idx: np.ndarray, ...}
+            self._cached_graphs = dict() # {raw_idx: np.ndarray, ...}
+            self._cached_idxs = dict()
+
         self._unfiltered_fnames = {os.path.relpath(os.path.join(root, fname), start=self._path) for root, _dirs, files in os.walk(self._path) for fname in files}
         self._suffixes = ['image.npy', 'mask.npy', 'graph.npz'] # coco graph suffixes
         self._data_fnames = self._extract_complete_suffix_set_files(self._unfiltered_fnames, self._suffixes)
@@ -280,12 +288,6 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
         self.num_image_nodes = self.grid_size * self.grid_size
         self.image_patch_positions = get_image_patch_positions()
         
-        self._cache = cache
-        if cache:
-            self._cached_images = dict() # {raw_idx: np.ndarray, ...}
-            self._cached_masks = dict() # {raw_idx: np.ndarray, ...}
-            self._cached_graphs = dict() # {raw_idx: np.ndarray, ...}
-            self._cached_idxs = dict()
 
     # Function to extract unique IDs
     def _extract_complete_suffix_set_files(self, file_paths, suffixes,):
@@ -321,25 +323,29 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
     def _load_coco_files(self, idx):
         raw_idx = self._raw_idx[idx]
         if self._cache and raw_idx in self._cached_idxs:
-            out = [self._cached_images[raw_idx], self._cached_masks[raw_idx], self._cached_graphs[raw_idx]]
-        else:
-            out = [self._load_np_from_path(self._data_fnames[raw_idx] + self._suffixes[i]) for i in range(len(self._suffixes))]
-            if self._cache:
-                self._cached_images[raw_idx] = out[0]
-                self._cached_masks[raw_idx] = out[1]
-                self._cached_graphs[raw_idx] = out[2]
-                self._cached_idxs[raw_idx] = True
-        return out
+            return self._cached_images[raw_idx], self._cached_masks[raw_idx], self._cached_graphs[raw_idx]
+
+        img = self._load_np_from_path(self._data_fnames[raw_idx] + self._suffixes[0])
+        mask_path = os.path.join(self._path, self._data_fnames[raw_idx]) + self._suffixes[1]
+        graph = self._load_np_from_path(self._data_fnames[raw_idx] + self._suffixes[2])
+
+        if self._cache:
+            self._cached_images[raw_idx] = img
+            self._cached_masks[raw_idx] = mask_path # store path to mask as only used for vis
+            self._cached_graphs[raw_idx] = graph
+            self._cached_idxs[raw_idx] = True
+
+        return img, mask_path, graph
 
     # construct a hig from raw data item 
     def __getitem__(self, idx: int) -> HeteroData:
 
         data = RelaxedHeteroData() # create hetero data object for hig
 
-        img, mask, graphs = self._load_coco_files(idx)
+        img, mask_path, graphs = self._load_coco_files(idx)
 
         data.image = torch.from_numpy(img[np.newaxis,...]) # add image to data object
-        data.mask = torch.from_numpy(mask[np.newaxis,...]) # add mask to data object
+        data.mask_path = mask_path # add mask to data object
 
         # ---- IMAGE
         image_patch_placeholder = torch.zeros(self.num_image_nodes, 1, dtype=torch.float32)
