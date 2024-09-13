@@ -165,10 +165,10 @@ class CocoStuffGraphDataset(GeoDataset):
     def __len__(self) -> int:
         return len(self.dataset)
 
-    # construct a dual graph from raw data item 
+    # construct a hig from raw data item 
     def __getitem__(self, idx: int) -> HeteroData:
 
-        data = RelaxedHeteroData() # create hetero data object for dual graph
+        data = RelaxedHeteroData() # create hetero data object for hig
         img, mask = self.dataset[idx]
 
         data.image = torch.from_numpy(img[np.newaxis,...]) # add image to data object
@@ -214,14 +214,15 @@ class CocoStuffGraphDataset(GeoDataset):
         for class_node_idx, class_label in enumerate(data['class_node'].x[:,0]):
             class_mask = np.argwhere(resized_mask == class_label) # get mask idxs for current class
             linear_image_patch_print_line_idxs = (class_mask[0] * self.grid_size + class_mask[1]).long() # linearise image node idxs
-            class_node_pos.append(linear_to_avg_2d_idx(linear_image_patch_print_line_idxs, img_width=self.grid_size)) # get image patch positions
+            avg_image_idxs = linear_to_avg_2d_idx(linear_image_patch_print_line_idxs, img_width=self.grid_size) if linear_image_patch_print_line_idxs.nelement() > 0 else torch.zeros(2)
+            class_node_pos.append(avg_image_idxs) # get image patch positions
 
             node_id_repeated = np.full((len(linear_image_patch_print_line_idxs),), class_node_idx, dtype=np.int16) # repeat class node idx for each patch
             edge_index = np.stack([node_id_repeated, linear_image_patch_print_line_idxs], axis=0)
             edges.append(edge_index)
         class_to_image_index = np.concatenate(edges, axis=1) if edges else np.zeros((2, 0), dtype=np.int16)
         data['class_node', 'class_to_image', 'image_node'].edge_index = torch.from_numpy(class_to_image_index) # convert to torch
-        data['class_node'].pos = torch.stack(class_node_pos, dim=0) # add class node positions for visualisation
+        data['class_node'].pos = torch.stack(class_node_pos, dim=0) if class_node_pos else torch.zeros((2, 0), dtype=torch.float32) # add class node positions for visualisation
         return data
     
     @property
@@ -242,6 +243,125 @@ class CocoStuffGraphDataset(GeoDataset):
         assert len(self.dataset.image_shape) == 3 # CHW
         assert self.dataset.image_shape[1] == self.dataset.image_shape[2]
         return self.dataset.image_shape[1]
+
+# ----------------------------------------------------------------------------
+
+# variant of COCOStuffGraph to load precomputes np files including graphs
+class COCOStuffGraphPrecomputedDataset(GeoDataset):
+    def __init__(self,
+                path,                       # Path to directory or zip for images/masks/graphs.
+                graph_transform = None,     # Transform to apply to the graph.
+                max_size    = None,         # Maximum number of items to load.
+                random_seed = 0,            # Random seed to use when applying max_size.
+        ) -> None:
+
+        super().__init__(None, graph_transform)
+        
+        self._path = path
+        assert os.path.isdir(self._path), "Path must be a directory"
+        self._unfiltered_fnames = {os.path.relpath(os.path.join(root, fname), start=self._path) for root, _dirs, files in os.walk(self._path) for fname in files}
+        self._suffixes = ['image.npy', 'mask.npy', 'graph.npz'] # coco graph suffixes
+        self._data_fnames = self._extract_complete_suffix_set_files(self._unfiltered_fnames, self._suffixes)
+        print('Found {} complete datapoint in {}'.format(len(self._data_fnames), self._path))
+        self._name = os.path.splitext(os.path.basename(self._path))[0]
+
+        # Apply max_size.
+        dataset_size = len(self._data_fnames)
+        self._raw_idx = np.arange(dataset_size, dtype=np.int64)
+        if (max_size is not None) and (self._raw_idx.size > max_size):
+            np.random.RandomState(random_seed % (1 << 31)).shuffle(self._raw_idx)
+            self._raw_idx = np.sort(self._raw_idx[:max_size])
+
+        raw_ref_image,*_ = self._load_coco_files(0)
+        self._raw_shape = [dataset_size] + list(raw_ref_image.shape)
+
+        self.grid_size = self._raw_shape[-1] # grid size for image patches 
+        self.num_image_nodes = self.grid_size * self.grid_size
+        self.image_patch_positions = get_image_patch_positions()
+        
+
+    # Function to extract unique IDs
+    def _extract_complete_suffix_set_files(self, file_paths, suffixes,):
+        complete_sets = []
+        for file in file_paths: # list over all files
+            if file.endswith(suffixes[0]): # check if file has primary suffix
+                file_prefix = file[:-len(suffixes[0])] # remove primary suffix from full file path
+                complete = True
+                for suffix in suffixes: 
+                    if not os.path.exists(os.path.join(self._path, file_prefix)+suffix): # for each suffix check if file exists
+                        complete  = False
+                        break 
+                if complete:   
+                    complete_sets.append(os.path.basename(file_prefix)) # if all suffixes exist, add to complete set
+        return complete_sets
+
+    @staticmethod
+    def _file_ext(fname):
+        return os.path.splitext(fname)[1].lower()
+        
+    def _load_np_from_path(self, fname):  # return image from fname as np.ndarray or .npz content
+        path = os.path.join(self._path, fname)
+        ext = self._file_ext(path)
+        if ext == '.npz':
+            with np.load(path, allow_pickle=True) as arr:
+                return dict(arr)  # Return the .npz file as a dictionary
+        else:
+            return np.load(path, allow_pickle=True)  # Return .npy file directly
+
+    def __len__(self) -> int:
+        return len(self._data_fnames)
+    
+    def _load_coco_files(self, idx):
+        raw_idx = self._raw_idx[idx]
+        out = [self._load_np_from_path(self._data_fnames[raw_idx] + self._suffixes[i]) for i in range(len(self._suffixes))]
+        return out
+
+    # construct a hig from raw data item 
+    def __getitem__(self, idx: int) -> HeteroData:
+
+        data = RelaxedHeteroData() # create hetero data object for hig
+
+        img, mask, graphs = self._load_coco_files(idx)
+
+        data.image = torch.from_numpy(img[np.newaxis,...]) # add image to data object
+        data.mask = torch.from_numpy(mask[np.newaxis,...]) # add mask to data object
+
+        # ---- IMAGE
+        image_patch_placeholder = torch.zeros(self.num_image_nodes, 1, dtype=torch.float32)
+        data['image_node'].x = image_patch_placeholder
+        data['image_node'].pos = self.image_patch_positions
+
+        # ---- Class
+        data['class_node'].x = torch.from_numpy(graphs['class_node']).to(torch.float32)
+        data['class_node'].pos = torch.from_numpy(graphs['class_pos']).to(torch.float32)
+        # ---- Edges
+        data['class_node', 'class_edge', 'class_node'].edge_index = torch.from_numpy(graphs['class_edge']).to(torch.int16)
+        data['class_node', 'class_to_image', 'image_node'].edge_index = torch.from_numpy(graphs['class_to_image']).to(torch.int16)
+
+        return data
+    
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def image_shape(self): # [CHW]
+        return list(self._raw_shape[1:])
+
+    @property
+    def num_channels(self):
+        assert len(self.image_shape) == 3 # CHW
+        return self.image_shape[0]
+
+    @property
+    def resolution(self):
+        assert len(self.image_shape) == 3 # CHW
+        assert self.image_shape[1] == self.image_shape[2]
+        return self.image_shape[1]
+    
+    def __getstate__(self):
+        return dict(self.__dict__,)
+
 
 # ----------------------------------------------------------------------------
 import re
