@@ -44,7 +44,7 @@ def logging_generate_sample_vis(
         batch,
         sampled_images,
         n=8,
-        labels=['HIG', 'Ground Truth', 'Sampled Image'],
+        labels=['HIG', 'Ground Truth Decoded Latents', 'Sampled Image'],
         title="Sampled Images - Training Graphs",
         latent_images=True,
         **kwargs,

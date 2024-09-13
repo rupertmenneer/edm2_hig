@@ -290,18 +290,15 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
         
 
     # Function to extract unique IDs
-    def _extract_complete_suffix_set_files(self, file_paths, suffixes,):
+    def _extract_complete_suffix_set_files(self, file_paths, suffixes):
         complete_sets = []
-        for file in file_paths: # list over all files
+        for file in file_paths:  # list over all files
             if file.endswith(suffixes[0]): # check if file has primary suffix
-                file_prefix = file[:-len(suffixes[0])] # remove primary suffix from full file path
-                complete = True
-                for suffix in suffixes: 
-                    if not os.path.exists(os.path.join(self._path, file_prefix)+suffix): # for each suffix check if file exists
-                        complete  = False
-                        break 
-                if complete:   
-                    complete_sets.append(os.path.basename(file_prefix)) # if all suffixes exist, add to complete set
+                file_prefix = file[:-len(suffixes[0])]
+                # Generate all potential file paths once
+                potential_files = [os.path.join(self._path, file_prefix + suffix) for suffix in suffixes]
+                if all(os.path.exists(f) for f in potential_files):  # Check all paths in one go
+                    complete_sets.append(os.path.basename(file_prefix))
         return complete_sets
 
     @staticmethod
