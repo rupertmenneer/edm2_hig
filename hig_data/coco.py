@@ -253,6 +253,7 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
                 graph_transform = None,     # Transform to apply to the graph.
                 max_size    = None,         # Maximum number of items to load.
                 random_seed = 0,            # Random seed to use when applying max_size.
+                cache       = True,    # Cache images in CPU memory?
         ) -> None:
 
         super().__init__(None, graph_transform)
@@ -279,6 +280,12 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
         self.num_image_nodes = self.grid_size * self.grid_size
         self.image_patch_positions = get_image_patch_positions()
         
+        self._cache = cache
+        if cache:
+            self._cached_images = dict() # {raw_idx: np.ndarray, ...}
+            self._cached_masks = dict() # {raw_idx: np.ndarray, ...}
+            self._cached_graphs = dict() # {raw_idx: np.ndarray, ...}
+            self._cached_idxs = dict()
 
     # Function to extract unique IDs
     def _extract_complete_suffix_set_files(self, file_paths, suffixes,):
@@ -313,7 +320,15 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
     
     def _load_coco_files(self, idx):
         raw_idx = self._raw_idx[idx]
-        out = [self._load_np_from_path(self._data_fnames[raw_idx] + self._suffixes[i]) for i in range(len(self._suffixes))]
+        if self._cache and raw_idx in self._cached_idxs:
+            out = [self._cached_images[raw_idx], self._cached_masks[raw_idx], self._cached_graphs[raw_idx]]
+        else:
+            out = [self._load_np_from_path(self._data_fnames[raw_idx] + self._suffixes[i]) for i in range(len(self._suffixes))]
+            if self._cache:
+                self._cached_images[raw_idx] = out[0]
+                self._cached_masks[raw_idx] = out[1]
+                self._cached_graphs[raw_idx] = out[2]
+                self._cached_idxs[raw_idx] = True
         return out
 
     # construct a hig from raw data item 
