@@ -63,7 +63,7 @@ def learning_rate_schedule(cur_nimg, batch_size, ref_lr=100e-4, ref_batches=70e3
 def training_loop(
     dataset_kwargs      = dict(class_name='hig_data.coco.CocoStuffGraphDataset',),
     encoder_kwargs      = dict(class_name='training.encoders.StabilityVAEEncoder'),
-    data_loader_kwargs  = dict(class_name='torch_geometric.loader.DataLoader', pin_memory=True, num_workers=0, ),
+    data_loader_kwargs  = dict(class_name='torch_geometric.loader.DataLoader', pin_memory=True, num_workers=2, ),
     network_kwargs      = dict(class_name='training.networks_edm2_hignn.Precond'),
     loss_kwargs         = dict(class_name='training.training_loop_hignn.EDM2Loss'),
     optimizer_kwargs    = dict(class_name='torch.optim.Adam', betas=(0.9, 0.99)),
@@ -72,7 +72,7 @@ def training_loop(
 
     run_dir             = '.',      # Output directory.
     seed                = 0,        # Global random seed.
-    batch_size          = 256,      # Total batch size for one training iteration.
+    batch_size          = 2048,      # Total batch size for one training iteration.
     batch_gpu           = None,     # Limit batch size per GPU. None = no limit.
     total_nimg          = 8<<30,    # Train for a total of N training images.
     slice_nimg          = None,     # Train for a maximum of N training images in one invocation. None = no limit.

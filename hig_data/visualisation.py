@@ -196,13 +196,13 @@ def visualise_het_graph_on_image(
     node_colors = get_node_colors(G)
 
     nodes_alphas = [0.9 if 'class_node' in n else 0. for n in G.nodes()]
-    nodes_size = [0.65 if 'class_node' in n else 0.0 for n in G.nodes()]
+    nodes_size = [10 if 'class_node' in n else 0.0 for n in G.nodes()]
     # Draw the graph on top of the image
     nx.draw(G, pos, with_labels=False, node_size=nodes_size, alpha=nodes_alphas, node_color=node_colors, width=linewidth, ax=ax, edgelist=[])
     
     edges = G.edges(data=True)
     edge_alphas = [0.5 if 'class_edge' in e[2]['type'] else 0.1 for e in edges]
-    edge_widths = [0.65 if 'class_edge' in e[2]['type'] else 0.3 for e in edges]
+    edge_widths = [1 if 'class_edge' in e[2]['type'] else 0.5 for e in edges]
     edge_styles = ['dashed' if 'class_edge' in e[2]['type'] else 'solid' for e in edges]
     edge_colors = ['black' if 'class_edge' in e[2]['type'] else 'white' for e in edges]
     
