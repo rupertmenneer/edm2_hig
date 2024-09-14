@@ -222,7 +222,7 @@ class CocoStuffGraphDataset(GeoDataset):
             edges.append(edge_index)
         class_to_image_index = np.concatenate(edges, axis=1) if edges else np.zeros((2, 0), dtype=np.int16)
         data['class_node', 'class_to_image', 'image_node'].edge_index = torch.from_numpy(class_to_image_index) # convert to torch
-        data['class_node'].pos = torch.stack(class_node_pos, dim=0) if class_node_pos else torch.zeros((2, 0), dtype=torch.float32) # add class node positions for visualisation
+        data['class_node'].pos = torch.stack(class_node_pos, dim=0) if class_node_pos else torch.empty((0, 2), dtype=torch.float32) # add class node positions for visualisation
         return data
     
     @property
@@ -350,11 +350,12 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
         data['image_node'].pos = self.image_patch_positions
 
         # ---- Class
-        data['class_node'].x = torch.from_numpy(graphs['class_node']).to(torch.float32)
-        data['class_node'].pos = torch.from_numpy(graphs['class_pos']).to(torch.float32)
+        data['class_node'].x = torch.from_numpy(graphs['class_node']).to(torch.float32) 
+        data['class_node'].pos = torch.from_numpy(graphs['class_pos']).to(torch.float32) if graphs['class_pos'].shape[0] != 0 else torch.empty((0, 2), dtype=torch.float32)
+
         # ---- Edges
-        data['class_node', 'class_edge', 'class_node'].edge_index = torch.from_numpy(graphs['class_edge']).to(torch.int16)
-        data['class_node', 'class_to_image', 'image_node'].edge_index = torch.from_numpy(graphs['class_to_image']).to(torch.int16)
+        data['class_node', 'class_edge', 'class_node'].edge_index = torch.from_numpy(graphs['class_edge']).to(torch.long) if graphs['class_edge'].shape[1] != 0 else torch.empty((2, 0), dtype=torch.long)
+        data['class_node', 'class_to_image', 'image_node'].edge_index = torch.from_numpy(graphs['class_to_image']).to(torch.long) if graphs['class_to_image'].shape[1] != 0 else torch.empty((2, 0), dtype=torch.long)
 
         return data
     
