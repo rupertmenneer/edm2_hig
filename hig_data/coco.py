@@ -270,7 +270,7 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
 
         self._unfiltered_fnames = {os.path.relpath(os.path.join(root, fname), start=self._path) for root, _dirs, files in os.walk(self._path) for fname in files}
         self._suffixes = ['image.npy', 'mask.npy', 'graph.npz'] # coco graph suffixes
-        self._data_fnames = self._extract_complete_suffix_set_files(self._unfiltered_fnames, self._suffixes)
+        self._data_fnames = sorted(self._extract_complete_suffix_set_files(self._unfiltered_fnames, self._suffixes))
         print('Found {} complete datapoint in {}'.format(len(self._data_fnames), self._path))
         self._name = os.path.splitext(os.path.basename(self._path))[0]
 

@@ -63,7 +63,7 @@ def learning_rate_schedule(cur_nimg, batch_size, ref_lr=100e-4, ref_batches=70e3
 def training_loop(
     dataset_kwargs      = dict(class_name='hig_data.coco.CocoStuffGraphDataset',),
     encoder_kwargs      = dict(class_name='training.encoders.StabilityVAEEncoder'),
-    data_loader_kwargs  = dict(class_name='torch_geometric.loader.DataLoader', pin_memory=True, num_workers=2, ),
+    data_loader_kwargs  = dict(class_name='torch_geometric.loader.DataLoader', pin_memory=True, num_workers=12, prefetch_factor=6),
     network_kwargs      = dict(class_name='training.networks_edm2_hignn.Precond'),
     loss_kwargs         = dict(class_name='training.training_loop_hignn.EDM2Loss'),
     optimizer_kwargs    = dict(class_name='torch.optim.Adam', betas=(0.9, 0.99)),
@@ -72,11 +72,11 @@ def training_loop(
 
     run_dir             = '.',      # Output directory.
     seed                = 0,        # Global random seed.
-    batch_size          = 2048,      # Total batch size for one training iteration.
+    batch_size          = 2048,     # Total batch size for one training iteration.
     batch_gpu           = None,     # Limit batch size per GPU. None = no limit.
     total_nimg          = 8<<30,    # Train for a total of N training images.
     slice_nimg          = None,     # Train for a maximum of N training images in one invocation. None = no limit.
-    status_nimg         = 128<<10,  # Report status every N training images. None = disable.
+    status_nimg         = 128<<12,  # Report status every N training images. None = disable.
     snapshot_nimg       = 8<<20,    # Save network snapshot every N training images. None = disable.
     checkpoint_nimg     = 128<<20,  # Save state checkpoint every N training images. None = disable.
 
@@ -155,7 +155,8 @@ def training_loop(
     start_nimg = state.cur_nimg
     stats_jsonl = None
 
-
+    # create fixed logging batch
+    logging_batch = copy.copy(next(dataset_iterator).clone().detach())
     while True:
         done = (state.cur_nimg >= stop_at_nimg)
 
@@ -183,6 +184,7 @@ def training_loop(
             # Flush training stats.
             training_stats.default_collector.update()
             if dist.get_rank() == 0:
+
                 if stats_jsonl is None:
                     stats_jsonl = open(os.path.join(run_dir, 'stats.jsonl'), 'at')
                 fmt = {'Progress/tick': '%.0f', 'Progress/kimg': '%.3f', 'timestamp': '%.3f'}
@@ -190,6 +192,15 @@ def training_loop(
                 items = [f'"{name}": ' + (fmt.get(name, '%g') % value if np.isfinite(value) else 'NaN') for name, value in items]
                 stats_jsonl.write('{' + ', '.join(items) + '}\n')
                 stats_jsonl.flush()
+
+                # wandb logging rank 0 only
+                with torch.no_grad():
+                    if wandb_kwargs['mode'] != 'disabled':
+                        if wandb.run is None:
+                            wandb.init(**wandb_kwargs)
+                        noise = torch.randn((8, net.img_channels, net.img_resolution, net.img_resolution), device=device)
+                        sampled = edm_sampler(net=ddp, noise=noise, graph=logging_batch)
+                        logging_generate_sample_vis(logging_batch, sampled)
 
             # Update progress and check for abort.
             dist.update_progress(state.cur_nimg // 1000, stop_at_nimg // 1000)
@@ -199,14 +210,7 @@ def training_loop(
                 done = True
 
             
-            with torch.no_grad():
-                if wandb_kwargs['mode'] != 'disabled':
-                    if wandb.run is None:
-                        wandb.init(**wandb_kwargs)
-                    graph_batch = copy.copy(next(dataset_iterator).detach())
-                    noise = torch.randn((8, net.img_channels, net.img_resolution, net.img_resolution), device=device)
-                    sampled = edm_sampler(net=ddp, noise=noise, graph=graph_batch)
-                    logging_generate_sample_vis(graph_batch, sampled)
+            
             
 
         # Save network snapshot.
@@ -242,7 +246,8 @@ def training_loop(
                 graph_batch.image_latents = encoder.encode_latents(graph_batch.image.to(device))
                 loss = loss_fn(net=ddp, graph=graph_batch,)
                 training_stats.report('Loss/loss', loss)
-                if wandb.run is not None:
+                # print(state.cur_nimg, graph_batch.image_latents.shape)
+                if dist.get_rank() == 0 and wandb.run is not None:
                         wandb.log({"train/loss": torch.mean(loss).detach(), "nimg": state.cur_nimg})
                 loss.sum().mul(loss_scaling / batch_gpu_total).backward()
                 

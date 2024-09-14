@@ -41,11 +41,11 @@ hignn_presets = {
 # Setup arguments for training.training_loop.training_loop().
 
 def setup_training_config(preset='edm2-img512-s',
-                          dataset_name = 'hig_data.coco.CocoStuffGraphDataset',
+                          dataset_name = 'hig_data.coco.COCOStuffGraphPrecomputedDataset',
                           **opts):
     opts = dnnlib.EasyDict(opts)
     c = dnnlib.EasyDict()
-
+    
     # Preset.
     if preset not in config_presets:
         raise click.ClickException(f'Invalid configuration preset "{preset}"')
@@ -54,12 +54,10 @@ def setup_training_config(preset='edm2-img512-s',
             opts[key] = value
 
     # Dataset.
-    c.dataset_kwargs = dnnlib.EasyDict(class_name=dataset_name, image_path=opts.image_path, mask_path=opts.mask_path, use_labels=opts.get('cond', False))
+    c.dataset_kwargs = dnnlib.EasyDict(class_name=dataset_name, path=opts.path,)
     try:
         dataset_obj = dnnlib.util.construct_class_by_name(**c.dataset_kwargs)
         dataset_channels = dataset_obj.num_channels
-        if c.dataset_kwargs.use_labels and not dataset_obj.has_labels:
-            raise click.ClickException('--cond=True, but no labels found in the dataset')
         del dataset_obj # conserve memory
     except IOError as err:
         raise click.ClickException(f'--data: {err}')
@@ -100,8 +98,8 @@ def print_training_config(run_dir, c):
     dist.print0(json.dumps(c, indent=2))
     dist.print0()
     dist.print0(f'Output directory:        {run_dir}')
-    dist.print0(f'Dataset path:            {c.dataset_kwargs.image_path}')
-    dist.print0(f'Class-conditional:       {c.dataset_kwargs.use_labels}')
+    dist.print0(f'Dataset path:            {c.dataset_kwargs.path}')
+    dist.print0(f'Class-conditional:       {False}')
     dist.print0(f'Number of GPUs:          {dist.get_world_size()}')
     dist.print0(f'Batch size:              {c.batch_size}')
     dist.print0(f'Mixed-precision:         {c.network_kwargs.use_fp16}')
@@ -149,8 +147,7 @@ def parse_nimg(s):
 @click.option('--preset',           help='Configuration preset', metavar='STR',                 type=str, default='edm2-img512-s', show_default=True)
 
 # COCO
-@click.option('--image_path',             help='Path to the dataset', metavar='ZIP|DIR',              type=str, required=True)
-@click.option('--mask_path',              help='Path to the dataset', metavar='ZIP|DIR',              type=str, required=True)
+@click.option('--path',             help='Path to the dataset', metavar='ZIP|DIR',              type=str, required=True)
 
 # Hyperparameters.
 @click.option('--duration',         help='Training duration', metavar='NIMG',                   type=parse_nimg, default=None)
