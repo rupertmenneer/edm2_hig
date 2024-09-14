@@ -351,7 +351,7 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
 
         # ---- Class
         data['class_node'].x = torch.from_numpy(graphs['class_node']).to(torch.float32) 
-        data['class_node'].pos = torch.from_numpy(graphs['class_pos']).to(torch.float32) if graphs['class_pos'].shape[0] != 0 else torch.empty((0, 2), dtype=torch.float32)
+        data['class_node'].pos = self.safe_key_pos_open(graphs, 'class_pos')
 
         # ---- Edges
         data['class_node', 'class_edge', 'class_node'].edge_index = torch.from_numpy(graphs['class_edge']).to(torch.long) if graphs['class_edge'].shape[1] != 0 else torch.empty((2, 0), dtype=torch.long)
@@ -359,6 +359,13 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
 
         return data
     
+    def safe_key_pos_open(self, graphs, key):
+        class_pos = graphs.get(key, None)
+        if class_pos is None or class_pos.size == 0 or class_pos.shape != (len(class_pos), 2):
+            return torch.empty((0, 2), dtype=torch.float32)
+        else:
+            return torch.from_numpy(class_pos).to(torch.float32)
+        
     @property
     def name(self):
         return self._name
