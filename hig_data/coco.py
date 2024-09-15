@@ -195,13 +195,14 @@ class CocoStuffGraphDataset(GeoDataset):
         return data
     
     def _create_class_nodes(self, data, mask):
-        class_labels = np.array([l for l in np.unique(mask) if l != 255], dtype=np.int16)
+        class_labels = np.array([l for l in np.unique(mask) if l != 255], dtype=np.int64)
         onehots = np.zeros((len(class_labels), self.n_labels), dtype=np.float32)
         onehots[np.arange(len(class_labels)), class_labels] = 1
-        # onehots = np.concatenate([class_labels[...,np.newaxis], onehots], axis=1) # add class labels to onehots position 0 for convenience
+
         data['class_node'].x = torch.from_numpy(onehots).to(torch.float32)
+        data['class_node'].label = class_labels # add class labels to onehots position 0 for convenience
+
         # densely connect class nodes
-        
         edge_index = torch.combinations(torch.arange(len(class_labels)), with_replacement=False).t()
         edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1)
         data['class_node', 'class_edge', 'class_node'].edge_index = edge_index
@@ -211,16 +212,16 @@ class CocoStuffGraphDataset(GeoDataset):
         edges = []
         resized_mask = torch.nn.functional.interpolate(torch.tensor(mask[np.newaxis,...], dtype=torch.float32), size=(self.grid_size, self.grid_size), mode='nearest').squeeze() # resize mask to match compression
         class_node_pos = []
-        for class_node_idx, class_label in enumerate(data['class_node'].x[:,0]):
+        for class_node_idx, class_label in enumerate(data['class_node'].label):
             class_mask = np.argwhere(resized_mask == class_label) # get mask idxs for current class
             linear_image_patch_print_line_idxs = (class_mask[0] * self.grid_size + class_mask[1]).long() # linearise image node idxs
             avg_image_idxs = linear_to_avg_2d_idx(linear_image_patch_print_line_idxs, img_width=self.grid_size) if linear_image_patch_print_line_idxs.nelement() > 0 else torch.zeros(2)
             class_node_pos.append(avg_image_idxs) # get image patch positions
 
-            node_id_repeated = np.full((len(linear_image_patch_print_line_idxs),), class_node_idx, dtype=np.int16) # repeat class node idx for each patch
+            node_id_repeated = np.full((len(linear_image_patch_print_line_idxs),), class_node_idx, dtype=np.int64) # repeat class node idx for each patch
             edge_index = np.stack([node_id_repeated, linear_image_patch_print_line_idxs], axis=0)
             edges.append(edge_index)
-        class_to_image_index = np.concatenate(edges, axis=1) if edges else np.zeros((2, 0), dtype=np.int16)
+        class_to_image_index = np.concatenate(edges, axis=1) if edges else np.zeros((2, 0), dtype=np.int64)
         data['class_node', 'class_to_image', 'image_node'].edge_index = torch.from_numpy(class_to_image_index) # convert to torch
         data['class_node'].pos = torch.stack(class_node_pos, dim=0) if class_node_pos else torch.empty((0, 2), dtype=torch.float32) # add class node positions for visualisation
         return data
@@ -243,6 +244,7 @@ class CocoStuffGraphDataset(GeoDataset):
         assert len(self.dataset.image_shape) == 3 # CHW
         assert self.dataset.image_shape[1] == self.dataset.image_shape[2]
         return self.dataset.image_shape[1]
+    
 
 # ----------------------------------------------------------------------------
 
@@ -351,7 +353,6 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
 
         # ---- Class
         data['class_node'].x = torch.from_numpy(graphs['class_node']).to(torch.float32)
-        data['class_node'].x *= np.sqrt(data['class_node'].x.shape[1]) # MP scaling for class node 
         data['class_node'].pos = self.safe_key_pos_open(graphs, 'class_pos')
 
         # ---- Edges
