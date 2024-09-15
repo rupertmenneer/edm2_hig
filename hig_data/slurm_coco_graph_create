@@ -58,7 +58,7 @@ source /home/${USER}/.bashrc
 conda activate edm2
 
 #! Full path to application executable: 
-application="python export_graph_data.py"
+application="python /home/rfsm2/rds/hpc-work/edm2_hig/hig_data/export_graph_data.py"
 
 #! Run options for the application:
 options=""

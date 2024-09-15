@@ -1,12 +1,15 @@
 import numpy as np
 import os
 
-def create_graph_dataset_and_export(output_dir='/home/rfsm2/rds/hpc-work/coco/coco_graph_train'):
-
-    dataset_root = '/home/rfsm2/rds/hpc-work/coco/'
+def create_graph_dataset_and_export(output_dir='coco_graph_train', dataset_root='/home/rfsm2/rds/hpc-work/coco/',):
     
-    img_path = dataset_root+'coco_train2017_256-sd.zip'
-    mask_path = dataset_root+'coco_train2017_masks_256.zip'
+    img_path = os.path.join(dataset_root, 'coco_train2017_256-sd.zip')
+    mask_path = os.path.join(dataset_root, 'coco_train2017_masks_256.zip')
+    output_dir = os.path.join(dataset_root, output_dir)
+
+    if not os.path.exists(output_dir): # make if doesn't exist
+        os.makedirs(output_dir) 
+    
     coco_graph = CocoStuffGraphDataset(img_path, mask_path, latent_images=True)
 
     for idx in range(len(coco_graph)):
