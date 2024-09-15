@@ -41,7 +41,11 @@ class HIGnnInterface(torch.nn.Module):
 
     def update_graph_image_nodes(self, x, graph):
         # reshape image into image nodes [B, C, H, W] -> [B * H * W, C]
-        graph['image_node'].x = x.permute(0, 2, 3, 1).reshape(-1, x.shape[1]) # overwrites placeholder
+        reshape_x = x.permute(0, 2, 3, 1).reshape(-1, x.shape[1])
+        if graph['image_node'].x.ndim == 1:
+            graph['image_node'].x = reshape_x # overwrites placeholder
+        else:
+            graph['image_node'].x.copy_(reshape_x) # updates existing image node
         return graph
         
     def extract_image_nodes(self, graph, shape):

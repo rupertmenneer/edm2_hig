@@ -198,7 +198,7 @@ class CocoStuffGraphDataset(GeoDataset):
         class_labels = np.array([l for l in np.unique(mask) if l != 255], dtype=np.int16)
         onehots = np.zeros((len(class_labels), self.n_labels), dtype=np.float32)
         onehots[np.arange(len(class_labels)), class_labels] = 1
-        onehots = np.concatenate([class_labels[...,np.newaxis], onehots], axis=1) # add class labels to onehots position 0 for convenience
+        # onehots = np.concatenate([class_labels[...,np.newaxis], onehots], axis=1) # add class labels to onehots position 0 for convenience
         data['class_node'].x = torch.from_numpy(onehots).to(torch.float32)
         # densely connect class nodes
         
@@ -345,12 +345,13 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
         data.mask_path = mask_path # add mask to data object
 
         # ---- IMAGE
-        image_patch_placeholder = torch.zeros(self.num_image_nodes, 1, dtype=torch.float32)
+        image_patch_placeholder = torch.empty((1,), dtype=torch.float32)
         data['image_node'].x = image_patch_placeholder
         data['image_node'].pos = self.image_patch_positions
 
         # ---- Class
-        data['class_node'].x = torch.from_numpy(graphs['class_node']).to(torch.float32) 
+        data['class_node'].x = torch.from_numpy(graphs['class_node']).to(torch.float32)
+        data['class_node'].x *= np.sqrt(data['class_node'].x.shape[1]) # MP scaling for class node 
         data['class_node'].pos = self.safe_key_pos_open(graphs, 'class_pos')
 
         # ---- Edges
