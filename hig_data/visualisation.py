@@ -162,19 +162,23 @@ def visualise_het_graph_on_image(
 
     ax.imshow(images, alpha=image_alpha)
 
-    mask = np.load(hetero_data.mask_path, allow_pickle=True) 
-    ax.imshow(mask.squeeze(), alpha=0.45)
+    if hasattr(hetero_data, 'mask_path'):
+        mask = np.load(hetero_data.mask_path, allow_pickle=True) 
+        ax.imshow(mask.squeeze(), alpha=0.45)
     
     # Create a NetworkX graph
     G = nx.Graph()
     # Get node positions and add them to the graph
     for node_type in node_types:
         assert hetero_data[node_type].pos is not None, f"Node type {node_type} does not have positions"
-        node_positions = hetero_data[node_type].pos 
-        node_features = hetero_data[node_type].x
-        for i in range(node_positions.size(0)):
+        node_positions = hetero_data[node_type].pos
 
-            G.add_node(f'{node_type}_{i}', type=node_type, class_type=int(node_features[i][0]), pos=(node_positions[i, 0].item(), node_positions[i, 1].item()))
+        class_labels = None
+        if hasattr(hetero_data[node_type], 'label'):
+            class_labels = torch.argmax(hetero_data[node_type].x, dim=1)
+        for i in range(node_positions.size(0)):
+            cls = class_labels[i] if class_labels is not None else 0
+            G.add_node(f'{node_type}_{i}', type=node_type, class_type=int(cls), pos=(node_positions[i, 0].item(), node_positions[i, 1].item()))
 
     # Add edges to the graph
     for edge_type in edge_types:
@@ -239,12 +243,14 @@ def generate_color_for_type(class_type, num_colors=185):
     return colormap(class_type)
 
 # Utility function to get node colors based on node types
-def get_node_colors(G,):
+def get_node_colors(G, color_nodes = ['class_node']):
     node_colors = []
     for node in G.nodes(data=True):
-        if node[1]:
+        if node[1] and node[1]['type'] in color_nodes:
             node_type = node[1]['class_type']
             node_colors.append(generate_color_for_type(node_type,))
+        else:
+            node_colors.append('black')
     return node_colors
 
 
