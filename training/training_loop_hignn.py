@@ -79,6 +79,7 @@ def training_loop(
     status_nimg         = 128<<14,  # Report status every N training images. None = disable.
     snapshot_nimg       = 8<<20,    # Save network snapshot every N training images. None = disable.
     checkpoint_nimg     = 128<<20,  # Save state checkpoint every N training images. None = disable.
+    wandb_nimg          = 128<<18,  # Wandb Vis every N training images. None = disable.
 
     loss_scaling        = 1,        # Loss scaling factor for reducing FP16 under/overflows.
     force_finite        = True,     # Get rid of NaN/Inf gradients before feeding them to the optimizer.
@@ -184,7 +185,6 @@ def training_loop(
             # Flush training stats.
             training_stats.default_collector.update()
             if dist.get_rank() == 0:
-
                 if stats_jsonl is None:
                     stats_jsonl = open(os.path.join(run_dir, 'stats.jsonl'), 'at')
                 fmt = {'Progress/tick': '%.0f', 'Progress/kimg': '%.3f', 'timestamp': '%.3f'}
@@ -192,16 +192,7 @@ def training_loop(
                 items = [f'"{name}": ' + (fmt.get(name, '%g') % value if np.isfinite(value) else 'NaN') for name, value in items]
                 stats_jsonl.write('{' + ', '.join(items) + '}\n')
                 stats_jsonl.flush()
-
-                # wandb logging rank 0 only
-                with torch.no_grad():
-                    if wandb_kwargs['mode'] != 'disabled':
-                        if wandb.run is None:
-                            wandb.init(**wandb_kwargs)
-                        noise = torch.randn((8, net.img_channels, net.img_resolution, net.img_resolution), device=device)
-                        sampled = edm_sampler(net=ddp, noise=noise, graph=logging_batch)
-                        logging_generate_sample_vis(logging_batch, sampled)
-
+            
             # Update progress and check for abort.
             dist.update_progress(state.cur_nimg // 1000, stop_at_nimg // 1000)
             if state.cur_nimg == stop_at_nimg and state.cur_nimg < total_nimg:
@@ -209,10 +200,16 @@ def training_loop(
             if dist.should_stop() or dist.should_suspend():
                 done = True
 
-            
-            
-            
-
+        # Save wandb vis.
+        if wandb_kwargs['mode'] != 'disabled' and wandb_nimg is not None and (done or state.cur_nimg % wandb_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0) and dist.get_rank() == 0:
+            if wandb.run is None: # init wandb if not already
+                wandb.init(**wandb_kwargs)
+            # wandb logging rank 0 only
+            with torch.no_grad():
+                noise = torch.randn((8, net.img_channels, net.img_resolution, net.img_resolution), device=device)
+                sampled = edm_sampler(net=ddp, noise=noise, graph=logging_batch) # sample images from noise and graph batch
+                logging_generate_sample_vis(logging_batch, sampled) # log images to wandb
+       
         # Save network snapshot.
         if snapshot_nimg is not None and state.cur_nimg % snapshot_nimg == 0 and (state.cur_nimg != start_nimg or start_nimg == 0) and dist.get_rank() == 0:
             ema_list = ema.get() if ema is not None else optimizer.get_ema(net) if hasattr(optimizer, 'get_ema') else net
@@ -255,6 +252,8 @@ def training_loop(
         # Run optimizer and update weights.
         lr = dnnlib.util.call_func_by_name(cur_nimg=state.cur_nimg, batch_size=batch_size, **lr_kwargs)
         training_stats.report('Loss/learning_rate', lr)
+        if wandb.run is not None:
+            wandb.log({"learning_rate": lr, "nimg": state.cur_nimg})
         for g in optimizer.param_groups:
             g['lr'] = lr
         if force_finite:
