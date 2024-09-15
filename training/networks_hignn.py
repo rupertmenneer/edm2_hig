@@ -58,10 +58,16 @@ class HIGnnInterface(torch.nn.Module):
         for key, emb in x.items():
             graph[key].x = emb
         return graph
+    
+    def apply_mp_scaling(self, graph, one_hot_labels=['class_node']):
+        for key in one_hot_labels:
+            graph[key].x *= np.sqrt(graph[key].x.shape[1]) # MP scaling for class node 
+        return graph
 
     def forward(self, x, graph):
 
         graph = self.update_graph_image_nodes(x, graph) # update and resize image nodes on graph with current feature map
+        graph = self.apply_mp_scaling(graph) # apply MP scaling to one hot class nodes
         
         y = self.gnn(graph.x_dict, graph.edge_index_dict, graph.edge_attr_dict) # pass dual graph through GNN
 
