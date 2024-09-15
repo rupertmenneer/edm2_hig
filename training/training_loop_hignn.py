@@ -76,7 +76,7 @@ def training_loop(
     batch_gpu           = None,     # Limit batch size per GPU. None = no limit.
     total_nimg          = 8<<30,    # Train for a total of N training images.
     slice_nimg          = None,     # Train for a maximum of N training images in one invocation. None = no limit.
-    status_nimg         = 128<<12,  # Report status every N training images. None = disable.
+    status_nimg         = 128<<14,  # Report status every N training images. None = disable.
     snapshot_nimg       = 8<<20,    # Save network snapshot every N training images. None = disable.
     checkpoint_nimg     = 128<<20,  # Save state checkpoint every N training images. None = disable.
 
