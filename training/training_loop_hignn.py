@@ -20,6 +20,7 @@ from torch_utils import training_stats
 from torch_utils import persistence
 from torch_utils import misc
 import wandb
+os.environ["WANDB_DISABLE_GPU"] = "true"
 
 from hig_data.visualisation import logging_generate_sample_vis
 from generate_images import edm_sampler
@@ -80,8 +81,7 @@ def training_loop(
     status_nimg         = 128<<14,  # Report status every N training images. None = disable.
     snapshot_nimg       = 8<<20,    # Save network snapshot every N training images. None = disable.
     checkpoint_nimg     = 128<<20,  # Save state checkpoint every N training images. None = disable.
-    wandb_nimg          = 128<<18,  # Wandb Vis every N training images. None = disable.
-
+    wandb_nimg          = 128<<14,  # Wandb Vis every N training images. None = disable.
     loss_scaling        = 1,        # Loss scaling factor for reducing FP16 under/overflows.
     force_finite        = True,     # Get rid of NaN/Inf gradients before feeding them to the optimizer.
     cudnn_benchmark     = True,     # Enable torch.backends.cudnn.benchmark?
@@ -96,6 +96,8 @@ def training_loop(
     torch.backends.cudnn.allow_tf32 = False
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
+    # Enable the W&B service mode
+    wandb.require("service")
 
     # Validate batch size.
     batch_gpu_total = batch_size // dist.get_world_size()
@@ -184,6 +186,7 @@ def training_loop(
             prev_status_time = cur_time
             torch.cuda.reset_peak_memory_stats()
 
+
             # Flush training stats.
             training_stats.default_collector.update()
             if dist.get_rank() == 0:
@@ -194,7 +197,8 @@ def training_loop(
                 items = [f'"{name}": ' + (fmt.get(name, '%g') % value if np.isfinite(value) else 'NaN') for name, value in items]
                 stats_jsonl.write('{' + ', '.join(items) + '}\n')
                 stats_jsonl.flush()
-            
+
+
             # Update progress and check for abort.
             dist.update_progress(state.cur_nimg // 1000, stop_at_nimg // 1000)
             if state.cur_nimg == stop_at_nimg and state.cur_nimg < total_nimg:
@@ -202,8 +206,8 @@ def training_loop(
             if dist.should_stop() or dist.should_suspend():
                 done = True
 
-        # Save wandb vis.
-        if wandb_kwargs['mode'] != 'disabled' and wandb_nimg is not None and (done or state.cur_nimg % wandb_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0) and dist.get_rank() == 0:
+        # Save wandb vis
+        if wandb_nimg is not None and (done or state.cur_nimg % wandb_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0) and wandb_kwargs['mode'] != 'disabled' and dist.get_rank() == 0:
             if wandb.run is None: # init wandb if not already
                 wandb.init(**wandb_kwargs, name=f"{preset_name}_bs_{batch_size}_seed_{seed}")
             # wandb logging rank 0 only
@@ -211,7 +215,7 @@ def training_loop(
                 noise = torch.randn((8, net.img_channels, net.img_resolution, net.img_resolution), device=device)
                 sampled = edm_sampler(net=ddp, noise=noise, graph=logging_batch) # sample images from noise and graph batch
                 logging_generate_sample_vis(logging_batch, sampled) # log images to wandb
-       
+
         # Save network snapshot.
         if snapshot_nimg is not None and state.cur_nimg % snapshot_nimg == 0 and (state.cur_nimg != start_nimg or start_nimg == 0) and dist.get_rank() == 0:
             ema_list = ema.get() if ema is not None else optimizer.get_ema(net) if hasattr(optimizer, 'get_ema') else net
@@ -245,7 +249,6 @@ def training_loop(
                 graph_batch.image_latents = encoder.encode_latents(graph_batch.image.to(device))
                 loss = loss_fn(net=ddp, graph=graph_batch,)
                 training_stats.report('Loss/loss', loss)
-                # print(state.cur_nimg, graph_batch.image_latents.shape)
                 if dist.get_rank() == 0 and wandb.run is not None:
                         wandb.log({"train/loss": torch.mean(loss).detach(), "nimg": state.cur_nimg})
                 loss.sum().mul(loss_scaling / batch_gpu_total).backward()
@@ -254,7 +257,7 @@ def training_loop(
         # Run optimizer and update weights.
         lr = dnnlib.util.call_func_by_name(cur_nimg=state.cur_nimg, batch_size=batch_size, **lr_kwargs)
         training_stats.report('Loss/learning_rate', lr)
-        if wandb.run is not None:
+        if dist.get_rank() == 0 and wandb.run is not None:
             wandb.log({"learning_rate": lr, "nimg": state.cur_nimg})
         for g in optimizer.param_groups:
             g['lr'] = lr
