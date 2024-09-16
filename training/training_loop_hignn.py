@@ -69,6 +69,7 @@ def training_loop(
     optimizer_kwargs    = dict(class_name='torch.optim.Adam', betas=(0.9, 0.99)),
     lr_kwargs           = dict(func_name='training.training_loop_hignn.learning_rate_schedule'),
     ema_kwargs          = dict(class_name='training.phema.PowerFunctionEMA'),
+    wandb_kwargs        = dict(project='COCO_edm2_hig', mode='online',), 
 
     run_dir             = '.',      # Output directory.
     seed                = 0,        # Global random seed.
@@ -84,8 +85,9 @@ def training_loop(
     loss_scaling        = 1,        # Loss scaling factor for reducing FP16 under/overflows.
     force_finite        = True,     # Get rid of NaN/Inf gradients before feeding them to the optimizer.
     cudnn_benchmark     = True,     # Enable torch.backends.cudnn.benchmark?
+    preset_name          = None,     # Name of the preset for logging.
+
     device              = torch.device('cuda'),
-    wandb_kwargs        = dict(project='COCO_edm2_hig', mode='online',),     # Wandb project name. None = disable wandb
 ):
     # Initialize.
     prev_status_time = time.time()
@@ -203,7 +205,7 @@ def training_loop(
         # Save wandb vis.
         if wandb_kwargs['mode'] != 'disabled' and wandb_nimg is not None and (done or state.cur_nimg % wandb_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0) and dist.get_rank() == 0:
             if wandb.run is None: # init wandb if not already
-                wandb.init(**wandb_kwargs)
+                wandb.init(**wandb_kwargs, name=f"{preset_name}_bs_{batch_size}_seed_{seed}")
             # wandb logging rank 0 only
             with torch.no_grad():
                 noise = torch.randn((8, net.img_channels, net.img_resolution, net.img_resolution), device=device)

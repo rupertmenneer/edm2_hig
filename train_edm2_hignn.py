@@ -85,6 +85,7 @@ def setup_training_config(preset='edm2-img512-s',
     c.checkpoint_nimg = opts.get('checkpoint', 0) or None
     c.wandb_nimg = opts.get('wandb_vis', 0) or None
     c.seed = opts.get('seed', 0)
+    c.preset_name = preset
     return c
 
 #----------------------------------------------------------------------------
