@@ -239,7 +239,7 @@ def training_loop(
         optimizer.zero_grad(set_to_none=True)
         for round_idx in range(num_accumulation_rounds):
             with misc.ddp_sync(ddp, (round_idx == num_accumulation_rounds - 1)):
-                graph_batch = next(dataset_iterator)
+                graph_batch = next(dataset_iterator).to(device)
                 graph_batch.image_latents = encoder.encode_latents(graph_batch.image.to(device))
                 loss = loss_fn(net=ddp, graph=graph_batch,)
                 training_stats.report('Loss/loss', loss)
