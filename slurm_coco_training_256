@@ -64,7 +64,7 @@ conda activate edm2
 export WANDB_API_KEY='150e3a3656bc3e6c76366ee98da5b0fd9f7c16ea'
 
 #! Full path to application executable: 
-application="torchrun --standalone --nproc_per_node=2 /rds/user/rfsm2/hpc-work/edm2_hig/train_edm2_hignn.py --outdir=/rds/user/rfsm2/hpc-work/  --preset=edm2-coco256-s --batch-gpu=1024 --cond=False --path=/rds/user/rfsm2/hpc-work/coco/coco_graph_train"
+application="torchrun --standalone --nproc_per_node=2 /rds/user/rfsm2/hpc-work/edm2_hig/train_edm2_hignn.py --outdir=/rds/user/rfsm2/hpc-work/  --preset=edm2-coco256-s --batch-gpu=1920 --cond=False --path=/rds/user/rfsm2/hpc-work/coco/coco_graph_train"
 
 #! Work directory (i.e. where the job will run):
 workdir="$SLURM_SUBMIT_DIR"  # The value of SLURM_SUBMIT_DIR sets workdir to the directory
