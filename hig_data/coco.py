@@ -356,6 +356,7 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
         # ---- Class
         data['class_node'].x = torch.from_numpy(graphs['class_node']).to(torch.float32)
         data['class_node'].pos = self.safe_key_pos_open(graphs, 'class_pos')
+        data['class_node'].label = torch.argmax(data['class_node'].x, dim=1)
 
         # ---- Edges
         data['class_node', 'class_edge', 'class_node'].edge_index = torch.from_numpy(graphs['class_edge']).to(torch.long) if graphs['class_edge'].shape[1] != 0 else torch.empty((2, 0), dtype=torch.long)
