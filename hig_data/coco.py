@@ -143,7 +143,7 @@ class CocoStuffGraphDataset(GeoDataset):
         image_path,                   # Path to directory or zip for images.
         mask_path,                    # Path to directory or zip for semantic masks.
         graph_transform=None,         # Transform to apply to the graph.
-        n_labels = 182,               # Number of classes in the dataset.
+        n_labels = 256,               # Number of classes in the dataset.
         latent_compression = 8,       # Compression factor for latent images.
         **kwargs,                     # Additional arguments for the GeoDataset base class.
     ) -> None:
@@ -195,7 +195,7 @@ class CocoStuffGraphDataset(GeoDataset):
         return data
     
     def _create_class_nodes(self, data, mask):
-        class_labels = np.array([l for l in np.unique(mask) if l != 255], dtype=np.int64)
+        class_labels = np.array([l for l in np.unique(mask)], dtype=np.int64)
         onehots = np.zeros((len(class_labels), self.n_labels), dtype=np.float32)
         onehots[np.arange(len(class_labels)), class_labels] = 1
 
