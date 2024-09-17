@@ -42,6 +42,7 @@ class EDM2Loss:
         sigma = (rnd_normal * self.P_std + self.P_mean).exp()
         weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
         noise = torch.randn_like(images) * sigma
+        print('latent input image shape', images.shape, graph)
         denoised, logvar = net(images + noise, sigma=sigma, graph=graph, return_logvar=True)
         loss = (weight / logvar.exp()) * ((denoised - images) ** 2) + logvar
         return loss
@@ -129,6 +130,7 @@ def training_loop(
         misc.print_module_summary(net, [
             torch.zeros([batch_gpu, net.img_channels, net.img_resolution, net.img_resolution], device=device),
             torch.ones([batch_gpu], device=device),
+            ref_graph.to(device),
             torch.zeros([batch_gpu, net.label_dim], device=device),
         ], max_nesting=2)
 
@@ -212,7 +214,7 @@ def training_loop(
                 wandb.init(**wandb_kwargs, name=f"{preset_name}_bs_{batch_size}_seed_{seed}")
             # wandb logging rank 0 only
             with torch.no_grad():
-                noise = torch.randn((8, net.img_channels, net.img_resolution, net.img_resolution), device=device)
+                noise = torch.randn((logging_batch.image.shape[0], net.img_channels, net.img_resolution, net.img_resolution), device=device)
                 sampled = edm_sampler(net=ddp, noise=noise, graph=logging_batch) # sample images from noise and graph batch
                 logging_generate_sample_vis(logging_batch, sampled) # log images to wandb
 
