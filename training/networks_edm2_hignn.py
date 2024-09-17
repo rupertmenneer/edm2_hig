@@ -232,6 +232,7 @@ class UNet(torch.nn.Module):
         self.emb_fourier = MPFourier(cnoise)
         self.emb_noise = MPConv(cnoise, cemb, kernel=[])
         self.emb_label = MPConv(label_dim, cemb, kernel=[]) if label_dim != 0 else None
+        self.emb_mask = MPConv(label_dim, cemb, kernel=[1,1]) # 1x1 conv to map mask labels to image
 
         # Encoder.
         self.enc = torch.nn.ModuleDict()
@@ -271,6 +272,12 @@ class UNet(torch.nn.Module):
         if self.emb_label is not None:
             emb = mp_sum(emb, self.emb_label(class_labels * np.sqrt(class_labels.shape[1])), t=self.label_balance)
         emb = mp_silu(emb)
+
+        # apply mask conditioning
+        mask_classes = 256
+        one_hot = torch.nn.functional.one_hot(graph.mask, num_classes=mask_classes) 
+        mask_emb = mp_silu(self.emb_mask(one_hot * np.sqrt(mask_classes)))
+        x = mp_sum(x, mask_emb, t=0.5)
 
         # Encoder.
         x = torch.cat([x, torch.ones_like(x[:, :1])], dim=1)
