@@ -168,7 +168,7 @@ def parse_nimg(s):
 @click.option('--status',           help='Interval of status prints', metavar='NIMG',           type=parse_nimg, default='128Ki', show_default=True)
 @click.option('--snapshot',         help='Interval of network snapshots', metavar='NIMG',       type=parse_nimg, default='32Mi', show_default=True)
 @click.option('--checkpoint',       help='Interval of training checkpoints', metavar='NIMG',    type=parse_nimg, default='256Mi', show_default=True)
-@click.option('--wandb_vis',       help='Interval of wandb vis', metavar='NIMG',                type=parse_nimg, default='3Mi', show_default=True)
+@click.option('--wandb_vis',       help='Interval of wandb vis', metavar='NIMG',                type=parse_nimg, default='128Ki', show_default=True)
 @click.option('--seed',             help='Random seed', metavar='INT',                          type=int, default=0, show_default=True)
 @click.option('-n', '--dry-run',    help='Print training options and exit',                     is_flag=True)
 
