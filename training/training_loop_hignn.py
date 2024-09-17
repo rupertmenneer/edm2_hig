@@ -42,7 +42,6 @@ class EDM2Loss:
         sigma = (rnd_normal * self.P_std + self.P_mean).exp()
         weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
         noise = torch.randn_like(images) * sigma
-        print('latent input image shape', images.shape, graph)
         denoised, logvar = net(images + noise, sigma=sigma, graph=graph, return_logvar=True)
         loss = (weight / logvar.exp()) * ((denoised - images) ** 2) + logvar
         return loss
@@ -163,7 +162,8 @@ def training_loop(
     stats_jsonl = None
 
     # create fixed logging batch
-    logging_batch = copy.copy(next(dataset_iterator).clone().detach())
+    logging_iter = iter(dnnlib.util.construct_class_by_name(dataset=dataset_obj, sampler=dataset_sampler, batch_size=8, **data_loader_kwargs))
+    logging_batch = copy.copy(next(logging_iter).clone().detach())
     while True:
         done = (state.cur_nimg >= stop_at_nimg)
 
