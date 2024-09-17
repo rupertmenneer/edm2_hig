@@ -88,8 +88,7 @@ class MP_GNN(torch.nn.Module):
         self.gnn_layers = torch.nn.ModuleList()
         self.gnn_layers.append(MP_GeoLinear(-1, hidden_channels,)) # projection layer
         for _ in range(num_gnn_layers):
-            self.gnn_layers.append(MP_HIPGnnConv((-1,-1), hidden_channels, normalize=True)) # gnn layers
-        self.gnn_layers.append(MP_GeoLinear(hidden_channels, hidden_channels,)) # output layer
+            self.gnn_layers.append(MP_HIPGnnConv((-1,-1), hidden_channels)) # gnn layers
 
     def forward(self, x, edge_index, edge_attr):
         for block in self.gnn_layers:            
