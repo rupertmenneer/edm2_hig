@@ -158,13 +158,7 @@ class Block(torch.nn.Module):
             if self.conv_skip is not None:
                 x = self.conv_skip(x)
             x = normalize(x, dim=1) # pixel norm
-
-        # if hignn is present, apply here - before residual, after normalization and resizing
-        apply_hignn = graph is not None and self.hignn is not None
-        if apply_hignn:
-            hig_out, graph = self.hignn(x, graph)
-            x = mp_sum(x, hig_out, t=self.res_balance)            
-
+    
         # Residual branch.
         y = self.conv_res0(mp_silu(x))
         c = self.emb_linear(emb, gain=self.emb_gain) + 1
@@ -172,6 +166,11 @@ class Block(torch.nn.Module):
         if self.training and self.dropout != 0:
             y = torch.nn.functional.dropout(y, p=self.dropout)
         y = self.conv_res1(y)
+
+        # if hignn is present, apply here - before residual, after normalization and resizing
+        apply_hignn = graph is not None and self.hignn is not None
+        if apply_hignn:
+            y, graph = self.hignn(y, graph)    
     
         # Connect the branches.
         if self.flavor == 'dec' and self.conv_skip is not None:

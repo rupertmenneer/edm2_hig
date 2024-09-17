@@ -74,7 +74,7 @@ def training_loop(
 
     run_dir             = '.',      # Output directory.
     seed                = 0,        # Global random seed.
-    batch_size          = 2048,     # Total batch size for one training iteration.
+    batch_size          = 1024,     # Total batch size for one training iteration.
     batch_gpu           = None,     # Limit batch size per GPU. None = no limit.
     total_nimg          = 8<<30,    # Train for a total of N training images.
     slice_nimg          = None,     # Train for a maximum of N training images in one invocation. None = no limit.
