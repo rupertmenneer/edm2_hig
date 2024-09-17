@@ -97,7 +97,10 @@ def training_loop(
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
     # Enable the W&B service mode
-    wandb.require("service")
+    
+    if wandb_kwargs['mode'] != 'disabled' and dist.get_rank() == 0: # init wandb if not already
+        wandb.require("service")
+        wandb.init(**wandb_kwargs, name=f"{preset_name}_bs_{batch_size}_seed_{seed}")
 
     # Validate batch size.
     batch_gpu_total = batch_size // dist.get_world_size()
@@ -209,9 +212,7 @@ def training_loop(
                 done = True
 
         # Save wandb vis
-        if wandb_nimg is not None and (done or state.cur_nimg % wandb_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0) and wandb_kwargs['mode'] != 'disabled' and dist.get_rank() == 0:
-            if wandb.run is None: # init wandb if not already
-                wandb.init(**wandb_kwargs, name=f"{preset_name}_bs_{batch_size}_seed_{seed}")
+        if wandb.run is not None and wandb_nimg is not None and (done or state.cur_nimg % wandb_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0):
             # wandb logging rank 0 only
             with torch.no_grad():
                 noise = torch.randn((logging_batch.image.shape[0], net.img_channels, net.img_resolution, net.img_resolution), device=device)
