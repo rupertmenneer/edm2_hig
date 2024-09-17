@@ -231,7 +231,8 @@ class UNet(torch.nn.Module):
         self.emb_fourier = MPFourier(cnoise)
         self.emb_noise = MPConv(cnoise, cemb, kernel=[])
         self.emb_label = MPConv(label_dim, cemb, kernel=[]) if label_dim != 0 else None
-        self.emb_mask = MPConv(label_dim, cemb, kernel=[1,1]) # 1x1 conv to map mask labels to image
+        self.mask_classes = 256
+        self.emb_mask = MPConv(self.mask_classes, model_channels, kernel=[1,1]) # 1x1 conv to map mask labels to image
 
         # Encoder.
         self.enc = torch.nn.ModuleDict()
@@ -273,10 +274,9 @@ class UNet(torch.nn.Module):
         emb = mp_silu(emb)
 
         # apply mask conditioning
-        mask_classes = 256
-        one_hot = torch.nn.functional.one_hot(graph.mask, num_classes=mask_classes) 
-        mask_emb = mp_silu(self.emb_mask(one_hot * np.sqrt(mask_classes)))
-        x = mp_sum(x, mask_emb, t=0.5)
+        resized_mask = torch.nn.functional.interpolate(graph.mask.to(torch.float32), x.shape[-1], mode='nearest').to(torch.int64).to(x.device)
+        one_hot = torch.nn.functional.one_hot(resized_mask, num_classes=self.mask_classes).squeeze(1).permute(0,3,1,2)
+        mask_emb = mp_silu(self.emb_mask(one_hot * np.sqrt(self.mask_classes)))
 
         # Encoder.
         x = torch.cat([x, torch.ones_like(x[:, :1])], dim=1)
@@ -285,6 +285,8 @@ class UNet(torch.nn.Module):
             x = block(x) if 'conv' in name else block(x, emb, graph) # MODIFICATION: pass graph to encoder blocks
             if isinstance(x, tuple): # MODIFICATION: unpack graph if hignn is present
                 x, graph = x
+            if f'{32}x{32}_conv' in name:
+                x = mp_sum(x, mask_emb.to(x.dtype), t=self.label_balance)
             skips.append(x)
 
         # Decoder.
