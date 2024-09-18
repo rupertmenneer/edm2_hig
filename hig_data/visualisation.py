@@ -156,8 +156,9 @@ def visualise_het_graph_on_image(
     assert isinstance(images, np.ndarray), "Images must be a numpy array"
 
     # Set up the matplotlib figure
-    dpi = 300
+    dpi = 100
     image_size = images.shape[0]
+
     fig, ax = plt.subplots(figsize=(image_size/dpi, image_size/dpi), dpi=dpi)
 
     ax.imshow(images, alpha=image_alpha)

@@ -3,11 +3,7 @@ import torch
 import numpy as np
 from typing import Union, Tuple
 import torch_geometric
-
-from torch_geometric.nn import MessagePassing
-
 from torch_utils import persistence
-from training.networks_edm2_hignn import MPConv
 
 #----------------------------------------------------------------------------
 # Magnitude-preserving sum (Equation 88).
@@ -80,7 +76,8 @@ class HIGnnInterface(torch.nn.Module):
         
         out = self.extract_image_nodes(graph, x.shape) # extract and resize image nodes back to image
 
-        out = self.out_conv(x, gain=self.out_gain).to(x.dtype) # out conv with zero initialised gain
+        # out = self.out_conv(out, gain=self.out_gain).to(x.dtype) # out conv with zero initialised gain
+        out = normalize(out, dim=1) # pixel norm
 
         return out, graph
 
@@ -132,7 +129,6 @@ class MP_HIPGnnConv(torch_geometric.nn.MessagePassing):
     def __init__(self,
                  in_channels        = Union[int, Tuple[int, int]], # input channels for L and R branches
                  out_channels       = int,                         # output channels
-                 normalize          = False,                       # normalise output features
                  aggr               = "mean",                      # aggregation scheme
                  **kwargs,
         ):
@@ -151,7 +147,6 @@ class MP_HIPGnnConv(torch_geometric.nn.MessagePassing):
 
         self.lin_l = MP_GeoLinear(aggr_out_channels, out_channels,)
         self.lin_r = MP_GeoLinear(in_channels[1], out_channels,)
-        self.normalize = normalize
         self.reset_parameters()
 
     # modified norm function, normalises weights based off attr name so can be re-used if class has multiple weights to norm
@@ -187,9 +182,6 @@ class MP_HIPGnnConv(torch_geometric.nn.MessagePassing):
         x_r = x[1]
         if x_r is not None:
             out = mp_sum(out.to(x[0].dtype), self.lin_r(x_r).to(x[0].dtype)) # apply right weight matrix and MP sum to connect branches
-
-        if self.normalize: # optional norm on output features
-            out = torch.nn.functional.normalize(out, p=2., dim=-1)
 
         return out
 
@@ -315,3 +307,30 @@ class MP_GeoLinear(torch.nn.Module):
     def __repr__(self) -> str:
         return (f'{self.__class__.__name__}({self.in_channels}, '
                 f'{self.out_channels},)')
+    
+
+
+#----------------------------------------------------------------------------
+# Magnitude-preserving convolution or fully-connected layer (Equation 47)
+# with force weight normalization (Equation 66).
+
+@persistence.persistent_class
+class MPConv(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, kernel):
+        super().__init__()
+        self.out_channels = out_channels
+        self.weight = torch.nn.Parameter(torch.randn(out_channels, in_channels, *kernel))
+
+    def forward(self, x, gain=1):
+        w = self.weight.to(torch.float32)
+        if self.training:
+            with torch.no_grad():
+                self.weight.copy_(normalize(w)) # forced weight normalization
+        w = normalize(w) # traditional weight normalization
+        w = w * (gain / np.sqrt(w[0].numel())) # magnitude-preserving scaling
+        w = w.to(x.dtype)
+        if w.ndim == 2:
+            return x @ w.t()
+        assert w.ndim == 4
+        return torch.nn.functional.conv2d(x, w, padding=(w.shape[-1]//2,))
+    

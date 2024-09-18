@@ -21,6 +21,7 @@ from torch_utils import persistence
 from torch_utils import misc
 import wandb
 os.environ["WANDB_DISABLE_GPU"] = "true"
+os.environ['WANDB_CACHE_DIR'] = '/home/rfsm2/rds/hpc-work/edm2_hig/wandb'
 
 from hig_data.visualisation import logging_generate_sample_vis
 from generate_images import edm_sampler
@@ -64,7 +65,7 @@ def learning_rate_schedule(cur_nimg, batch_size, ref_lr=100e-4, ref_batches=70e3
 def training_loop(
     dataset_kwargs      = dict(class_name='hig_data.coco.CocoStuffGraphDataset',),
     encoder_kwargs      = dict(class_name='training.encoders.StabilityVAEEncoder'),
-    data_loader_kwargs  = dict(class_name='torch_geometric.loader.DataLoader', pin_memory=True, num_workers=12, prefetch_factor=6),
+    data_loader_kwargs  = dict(class_name='torch_geometric.loader.DataLoader', pin_memory=True, num_workers=16, prefetch_factor=8),
     network_kwargs      = dict(class_name='training.networks_edm2_hignn.Precond'),
     loss_kwargs         = dict(class_name='training.training_loop_hignn.EDM2Loss'),
     optimizer_kwargs    = dict(class_name='torch.optim.Adam', betas=(0.9, 0.99)),
