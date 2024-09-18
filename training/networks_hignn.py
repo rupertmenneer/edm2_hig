@@ -7,6 +7,7 @@ import torch_geometric
 from torch_geometric.nn import MessagePassing
 
 from torch_utils import persistence
+from training.networks_edm2_hignn import MPConv
 
 #----------------------------------------------------------------------------
 # Magnitude-preserving sum (Equation 88).
@@ -38,6 +39,9 @@ class HIGnnInterface(torch.nn.Module):
         super().__init__()
         gnn = MP_GNN(gnn_channels, num_gnn_layers)
         self.gnn = torch_geometric.nn.to_hetero(gnn, metadata, aggr="mean")
+
+        self.out_gain = torch.nn.Parameter(torch.zeros([]))
+        self.out_conv = MPConv(gnn_channels, gnn_channels, kernel=[3,3])
 
     def update_graph_image_nodes(self, x, graph):
         _,c,h,w = x.shape
@@ -76,6 +80,8 @@ class HIGnnInterface(torch.nn.Module):
         
         out = self.extract_image_nodes(graph, x.shape) # extract and resize image nodes back to image
 
+        out = self.out_conv(x, gain=self.out_gain).to(x.dtype) # out conv with zero initialised gain
+
         return out, graph
 
 
@@ -86,11 +92,11 @@ class MP_GNN(torch.nn.Module):
 
     def __init__(self, hidden_channels, num_gnn_layers=2,):
         super().__init__()
+
         self.gnn_layers = torch.nn.ModuleList()
         self.gnn_layers.append(MP_GeoLinear(-1, hidden_channels,)) # projection layer
         for _ in range(num_gnn_layers):
             self.gnn_layers.append(MP_HIPGnnConv((-1,-1), hidden_channels)) # gnn layers
-        self.gnn_layers.append(MP_GeoLinear(hidden_channels, hidden_channels,)) # projection layer
 
     def forward(self, x, edge_index, edge_attr):
         for block in self.gnn_layers:            
