@@ -249,7 +249,8 @@ class UNet(torch.nn.Module):
             for idx in range(num_blocks[level]):
                 cin = cout
                 cout = channels
-                self.enc[f'{res}x{res}_block{idx}'] = Block(cin, cout, cemb, flavor='enc', attention=(res in attn_resolutions), gnn_metadata=(gnn_metadata if res in gnn_resolutions else None), **block_kwargs)
+                # self.enc[f'{res}x{res}_block{idx}'] = Block(cin, cout, cemb, flavor='enc', attention=(res in attn_resolutions), gnn_metadata=(gnn_metadata if res in gnn_resolutions else None), **block_kwargs)
+                self.enc[f'{res}x{res}_block{idx}'] = Block(cin, cout, cemb, flavor='enc', attention=(res in attn_resolutions), gnn_metadata=None, **block_kwargs)
 
         # Decoder.
         self.dec = torch.nn.ModuleDict()

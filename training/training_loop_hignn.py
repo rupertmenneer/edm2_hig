@@ -38,7 +38,6 @@ class EDM2Loss:
 
     def __call__(self, net, graph, labels=None):
         images = graph.image_latents
-        # init graph image nodes
         rnd_normal = torch.randn([images.shape[0], 1, 1, 1], device=images.device)
         sigma = (rnd_normal * self.P_std + self.P_mean).exp()
         weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
