@@ -38,6 +38,7 @@ class EDM2Loss:
 
     def __call__(self, net, graph, labels=None):
         images = graph.image_latents
+        # init graph image nodes
         rnd_normal = torch.randn([images.shape[0], 1, 1, 1], device=images.device)
         sigma = (rnd_normal * self.P_std + self.P_mean).exp()
         weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
@@ -141,7 +142,7 @@ def training_loop(
     # Setup training state.
     dist.print0('Setting up training state...')
     state = dnnlib.EasyDict(cur_nimg=0, total_elapsed_time=0)
-    ddp = torch.nn.parallel.DistributedDataParallel(net, device_ids=[device])
+    ddp = torch.nn.parallel.DistributedDataParallel(net, device_ids=[device], find_unused_parameters=True)
     loss_fn = dnnlib.util.construct_class_by_name(**loss_kwargs)
     optimizer = dnnlib.util.construct_class_by_name(params=net.parameters(), **optimizer_kwargs)
     ema = dnnlib.util.construct_class_by_name(net=net, **ema_kwargs) if ema_kwargs is not None else None

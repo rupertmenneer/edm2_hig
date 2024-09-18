@@ -234,7 +234,6 @@ class UNet(torch.nn.Module):
         self.mask_classes = 256
         # self.emb_mask = MPConv(self.mask_classes, model_channels, kernel=[1,1]) # 1x1 conv to map mask labels to image
         self.init_hignn =  HIGnnInterface(gnn_metadata, model_channels) if gnn_metadata is not None else None
-        print(gnn_metadata, self.init_hignn)
 
         # Encoder.
         self.enc = torch.nn.ModuleDict()
@@ -332,6 +331,7 @@ class Precond(torch.nn.Module):
         sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1)
         class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
         dtype = torch.float16 if (self.use_fp16 and not force_fp32 and x.device.type == 'cuda') else torch.float32
+        graph = graph.to(x.device) if graph is not None else graph # cast graph to device
 
         # Preconditioning weights.
         c_skip = self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2)

@@ -40,10 +40,11 @@ class HIGnnInterface(torch.nn.Module):
         self.gnn = torch_geometric.nn.to_hetero(gnn, metadata, aggr="mean")
 
     def update_graph_image_nodes(self, x, graph):
-        # reshape image into image nodes [B, C, H, W] -> [B * H * W, C]
-        reshape_x = x.permute(0, 2, 3, 1).reshape(-1, x.shape[1])
-        if graph['image_node'].x.ndim == 1:
-            graph['image_node'].x = reshape_x # overwrites placeholder
+        _,c,h,w = x.shape
+        reshape_x = x.permute(0, 2, 3, 1).reshape(-1, c) # reshape img to image nodes [B, C, H, W] -> [B * H * W, C]
+        if graph['image_node'].x.shape != c:
+            with torch.no_grad():
+                graph['image_node'].x = reshape_x # overwrites placeholder
         else:
             graph['image_node'].x.copy_(reshape_x) # updates existing image node
         return graph
@@ -69,7 +70,6 @@ class HIGnnInterface(torch.nn.Module):
         graph = self.update_graph_image_nodes(x, graph) # update and resize image nodes on graph with current feature map
         graph = self.apply_mp_scaling(graph) # apply MP scaling to one hot class nodes
         
-        self.gnn = self.gnn.to(x.device)
         y = self.gnn(graph.x_dict, graph.edge_index_dict, graph.edge_attr_dict) # pass dual graph through GNN
 
         graph = self.update_graph_embeddings(y, graph) # update graph with new embeddings
@@ -90,6 +90,7 @@ class MP_GNN(torch.nn.Module):
         self.gnn_layers.append(MP_GeoLinear(-1, hidden_channels,)) # projection layer
         for _ in range(num_gnn_layers):
             self.gnn_layers.append(MP_HIPGnnConv((-1,-1), hidden_channels)) # gnn layers
+        self.gnn_layers.append(MP_GeoLinear(hidden_channels, hidden_channels,)) # projection layer
 
     def forward(self, x, edge_index, edge_attr):
         for block in self.gnn_layers:            
