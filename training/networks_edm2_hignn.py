@@ -175,7 +175,7 @@ class Block(torch.nn.Module):
         # Connect the branches.
         if self.flavor == 'dec' and self.conv_skip is not None:
             x = self.conv_skip(x)
-        x = mp_sum(x, y, t=self.res_balance)
+        x = mp_sum(x, y.to(x.dtype), t=self.res_balance)
 
         # Self-attention.
         # Note: torch.nn.functional.scaled_dot_product_attention() could be used here,
@@ -232,7 +232,9 @@ class UNet(torch.nn.Module):
         self.emb_noise = MPConv(cnoise, cemb, kernel=[])
         self.emb_label = MPConv(label_dim, cemb, kernel=[]) if label_dim != 0 else None
         self.mask_classes = 256
-        self.emb_mask = MPConv(self.mask_classes, model_channels, kernel=[1,1]) # 1x1 conv to map mask labels to image
+        # self.emb_mask = MPConv(self.mask_classes, model_channels, kernel=[1,1]) # 1x1 conv to map mask labels to image
+        self.init_hignn =  HIGnnInterface(gnn_metadata, model_channels) if gnn_metadata is not None else None
+        print(gnn_metadata, self.init_hignn)
 
         # Encoder.
         self.enc = torch.nn.ModuleDict()
@@ -274,19 +276,23 @@ class UNet(torch.nn.Module):
         emb = mp_silu(emb)
 
         # apply mask conditioning
-        resized_mask = torch.nn.functional.interpolate(graph.mask.to(torch.float32), x.shape[-1], mode='nearest').to(torch.int64).to(x.device)
-        one_hot = torch.nn.functional.one_hot(resized_mask, num_classes=self.mask_classes).squeeze(1).permute(0,3,1,2)
-        mask_emb = mp_silu(self.emb_mask(one_hot * np.sqrt(self.mask_classes)))
+        # resized_mask = torch.nn.functional.interpolate(graph.mask.to(torch.float32), x.shape[-1], mode='nearest').to(torch.int64).to(x.device)
+        # one_hot = torch.nn.functional.one_hot(resized_mask, num_classes=self.mask_classes).squeeze(1).permute(0,3,1,2)
+        # mask_emb = mp_silu(self.emb_mask(one_hot * np.sqrt(self.mask_classes)))
 
         # Encoder.
         x = torch.cat([x, torch.ones_like(x[:, :1])], dim=1)
+
+        init_gnn_emb, graph = self.init_hignn(x, graph)
+
         skips = []
         for name, block in self.enc.items():
             x = block(x) if 'conv' in name else block(x, emb, graph) # MODIFICATION: pass graph to encoder blocks
             if isinstance(x, tuple): # MODIFICATION: unpack graph if hignn is present
                 x, graph = x
             if f'{32}x{32}_conv' in name:
-                x = mp_sum(x, mask_emb.to(x.dtype), t=self.label_balance)
+                # x = mp_sum(x, mask_emb.to(x.dtype), t=self.label_balance)
+                x = mp_sum(x, init_gnn_emb.to(x.dtype), t=self.label_balance)
             skips.append(x)
 
         # Decoder.

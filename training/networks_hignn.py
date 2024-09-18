@@ -69,6 +69,7 @@ class HIGnnInterface(torch.nn.Module):
         graph = self.update_graph_image_nodes(x, graph) # update and resize image nodes on graph with current feature map
         graph = self.apply_mp_scaling(graph) # apply MP scaling to one hot class nodes
         
+        self.gnn = self.gnn.to(x.device)
         y = self.gnn(graph.x_dict, graph.edge_index_dict, graph.edge_attr_dict) # pass dual graph through GNN
 
         graph = self.update_graph_embeddings(y, graph) # update graph with new embeddings
@@ -178,7 +179,7 @@ class MP_HIPGnnConv(torch_geometric.nn.MessagePassing):
 
         x_r = x[1]
         if x_r is not None:
-            out = mp_sum(out, self.lin_r(x_r)) # apply right weight matrix and MP sum to connect branches
+            out = mp_sum(out.to(x[0].dtype), self.lin_r(x_r).to(x[0].dtype)) # apply right weight matrix and MP sum to connect branches
 
         if self.normalize: # optional norm on output features
             out = torch.nn.functional.normalize(out, p=2., dim=-1)
