@@ -70,7 +70,7 @@ def edm_sampler(
 ):
     # Guided denoiser.
     def denoise(x, t):
-        Dx = net(x, t, graph).to(dtype)
+        Dx = net(x, t, graph.clone()).to(dtype) # must clone graph here to avoid passing in modified data in subsequent steps
         if guidance == 1:
             return Dx
         ref_Dx = gnet(x, t).to(dtype)
