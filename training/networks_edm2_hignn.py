@@ -217,7 +217,7 @@ class UNet(torch.nn.Module):
         attn_resolutions    = [8,4],        # List of resolutions with self-attention.
         gnn_resolutions     = [32],         # MODIFICATION: List of resolutions with self-attention.
         gnn_metadata        = None,         # MODIFICATION: Metadata for dual gnn
-        gnn_classes         = 256,         # MODIFICATION: Metadata for dual gnn
+        gnn_classes         = 182,         # MODIFICATION: Metadata for dual gnn
         label_balance       = 0.5,          # Balance between noise embedding (0) and class embedding (1).
         concat_balance      = 0.5,          # Balance between skip connections (0) and main path (1).
         **block_kwargs,                     # Arguments for Block.
