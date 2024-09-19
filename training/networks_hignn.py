@@ -1,10 +1,13 @@
 
+
+
 import torch
 import numpy as np
-from typing import Union, Tuple
+from typing import Union, Tuple, Optional
 import torch_geometric
 from torch_utils import persistence
-from torch_geometric.nn import SAGEConv
+import copy
+from typing import Optional
 
 #----------------------------------------------------------------------------
 # Magnitude-preserving sum (Equation 88).
@@ -72,9 +75,7 @@ class HIGnnInterface(torch.nn.Module):
 
         graph = self.update_graph_image_nodes(x, graph) # update and resize image nodes on graph with current feature map
         graph = self.apply_mp_scaling(graph) # apply MP scaling to one hot class nodes
-
-        print('input x_dict', [v.shape for k,v in graph.x_dict.items()])
-        print(self.gnn.gnn_layers)        
+   
         y = self.gnn(graph.x_dict, graph.edge_index_dict, graph.edge_attr_dict) # pass dual graph through GNN
 
         graph = self.update_graph_embeddings(y, graph) # update graph with new embeddings
@@ -96,13 +97,13 @@ class MP_GNN(torch.nn.Module):
         super().__init__()
 
         self.gnn_layers = torch.nn.ModuleList()
-        self.gnn_layers.append(MP_GeoLinear(-1, hidden_channels,)) # projection layer
+        # self.gnn_layers.append(MP_GeoLinear(-1, hidden_channels,)) # projection layer
         for _ in range(num_gnn_layers):
             self.gnn_layers.append(MP_HIPGnnConv((-1,-1), hidden_channels)) # gnn layers
 
     def forward(self, x, edge_index, edge_attr):
-        for block in self.gnn_layers:            
-            x = block(x) if isinstance(block, (MP_GeoLinear)) else block(heterogenous_mp_silu(x), edge_index=edge_index, )
+        for block in self.gnn_layers:
+            x = block(x) if isinstance(block, (MP_GeoLinear)) else block(heterogenous_mp_silu(x), edge_index=edge_index, edge_attr=edge_attr)
         return x
     
 #----------------------------------------------------------------------------
@@ -128,19 +129,35 @@ def heterogenous_mp_silu(x):
 #----------------------------------------------------------------------------
 # Magnitude-preserving Graph SAGE Conv
 # with force weight normalization (Equation 66 karras).
+
+
+class MP_Sum_Aggregation(torch_geometric.nn.Aggregation):
+
+    def forward(self, x: torch.Tensor, index: Optional[torch.Tensor] = None,
+                ptr: Optional[torch.Tensor] = None, dim_size: Optional[int] = None,
+                dim: int = -2) -> torch.Tensor:
+                
+        N = torch.bincount(index).clamp(min=1).float() # clamp to a minimum of 1
+        sqrt_N = torch.sqrt(N).unsqueeze(-1)  # take sqrt of bincount to adhere to magnitude-preserving scaling
+
+        mean_out = self.reduce(x, index, ptr, dim_size, dim, reduce='sum') # mean aggregation of local neighbourhood
+        mean_out = mean_out / sqrt_N # apply magnitude-preserving scaling
+
+        return mean_out
+
     
 class MP_HIPGnnConv(torch_geometric.nn.MessagePassing):
 
     def __init__(self,
                  in_channels        = Union[int, Tuple[int, int]], # input channels for L and R branches
                  out_channels       = int,                         # output channels
-                 aggr               = "mean",                      # aggregation scheme
                  **kwargs,
         ):
         
         self.in_channels = in_channels
         self.out_channels = out_channels
-        super().__init__(aggr, **kwargs)
+        aggr = MP_Sum_Aggregation()
+        super().__init__(aggr=aggr, **kwargs) # set aggr to None to allow custom message and aggregate functions
 
         if isinstance(in_channels, int):
             in_channels = (in_channels, in_channels)
@@ -154,16 +171,6 @@ class MP_HIPGnnConv(torch_geometric.nn.MessagePassing):
         self.lin_r = MP_GeoLinear(in_channels[1], out_channels,)
         self.reset_parameters()
 
-    # modified norm function, normalises weights based off attr name so can be re-used if class has multiple weights to norm
-    def normalise_weights(self, weight_name, dtype):
-        w = getattr(self, weight_name).weight.to(torch.float32)
-        if self.training:
-            with torch.no_grad():
-                getattr(self, weight_name).weight.copy_(normalize(w)) # Forced weight normalization
-        w = normalize(w) # Traditional weight normalization
-        w = w * (1 / np.sqrt(w[0].numel())) # Magnitude-preserving scaling
-        getattr(self, weight_name).weight.data = w.to(dtype)
-
     def forward(
         self,
         x: Union[torch.Tensor, torch_geometric.typing.OptPairTensor],
@@ -172,21 +179,17 @@ class MP_HIPGnnConv(torch_geometric.nn.MessagePassing):
         edge_attr: torch_geometric.typing.OptPairTensor = None,
     ) -> torch.Tensor:
         
-        # access and normalize the weight matrices if lazy initialisation complete
-        if not has_uninitialized_params(self): 
-            self.normalise_weights('lin_l', x[0].dtype)
-            self.normalise_weights('lin_r', x[0].dtype)
-
+        
         if isinstance(x, torch.Tensor):
             x = (x, x) # split into two branches
 
-        # custom MP cat propagate function to support edge attr if required
         out = self.propagate(edge_index, x=x, edge_attr=edge_attr, size=size) # propagate (with MP-cat if edge attribute exists)
         out = self.lin_l(out) # left weight matrix
 
         x_r = x[1]
         if x_r is not None:
-            out = mp_sum(out.to(x[0].dtype), self.lin_r(x_r).to(x[0].dtype)) # apply right weight matrix and MP sum to connect branches
+            out_r = self.lin_r(x_r).to(x[0].dtype) # right weight matrix
+            out = mp_sum(out.to(x[0].dtype), out_r) # apply right weight matrix and MP sum to connect branches
 
         return out
 
@@ -208,7 +211,6 @@ class MP_HIPGnnConv(torch_geometric.nn.MessagePassing):
         return (f'{self.__class__.__name__}({self.in_channels}, '
                 f'{self.out_channels}, aggr={self.aggr})')
 
-
 # check if param is UninitializedParameter - from pytorch geometric linear.py
 def is_uninitialized_parameter(x) -> bool:
     if not hasattr(torch.nn.parameter, 'UninitializedParameter'):
@@ -222,8 +224,6 @@ def has_uninitialized_params(model):
             return True
     return False
 
-
-import copy
 
 #----------------------------------------------------------------------------
 # Magnitude-preserving convolution or fully-connected layer (Equation 47)
@@ -313,7 +313,6 @@ class MP_GeoLinear(torch.nn.Module):
         return (f'{self.__class__.__name__}({self.in_channels}, '
                 f'{self.out_channels},)')
     
-
 
 #----------------------------------------------------------------------------
 # Magnitude-preserving convolution or fully-connected layer (Equation 47)
