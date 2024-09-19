@@ -4,6 +4,7 @@ import numpy as np
 from typing import Union, Tuple
 import torch_geometric
 from torch_utils import persistence
+from torch_geometric.nn import SAGEConv
 
 #----------------------------------------------------------------------------
 # Magnitude-preserving sum (Equation 88).
@@ -67,6 +68,8 @@ class HIGnnInterface(torch.nn.Module):
 
     def forward(self, x, graph):
 
+        assert x.shape[0] == graph.image.shape[0], "Batch size mismatch between input and graph"
+
         graph = self.update_graph_image_nodes(x, graph) # update and resize image nodes on graph with current feature map
         graph = self.apply_mp_scaling(graph) # apply MP scaling to one hot class nodes
         
@@ -97,7 +100,7 @@ class MP_GNN(torch.nn.Module):
 
     def forward(self, x, edge_index, edge_attr):
         for block in self.gnn_layers:            
-            x = block(x) if isinstance(block, (MP_GeoLinear)) else block(heterogenous_mp_silu(x), edge_index=edge_index, edge_attr=edge_attr)
+            x = block(x) if isinstance(block, (MP_GeoLinear)) else block(heterogenous_mp_silu(x), edge_index=edge_index, )
         return x
     
 #----------------------------------------------------------------------------

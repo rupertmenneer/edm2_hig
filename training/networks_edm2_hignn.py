@@ -287,7 +287,7 @@ class UNet(torch.nn.Module):
 
         skips = []
         for name, block in self.enc.items():
-            x = block(x) if 'conv' in name else block(x, emb, graph) # MODIFICATION: pass graph to encoder blocks
+            x = block(x) if 'conv' in name else block(x, emb=emb, graph=graph) # MODIFICATION: pass graph to encoder blocks
             if isinstance(x, tuple): # MODIFICATION: unpack graph if hignn is present
                 x, graph = x
             if f'{32}x{32}_conv' in name:
