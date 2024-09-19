@@ -219,8 +219,14 @@ def training_loop(
             # wandb logging rank 0 only
             with torch.no_grad():
                 noise = torch.randn((logging_batch.image.shape[0], net.img_channels, net.img_resolution, net.img_resolution), device=device)
-                sampled = edm_sampler(net=ddp, noise=noise, graph=logging_batch) # sample images from noise and graph batch
-                logging_generate_sample_vis(logging_batch, sampled) # log images to wandb
+                sampled = edm_sampler(net=ddp, noise=noise, graph=logging_batch.clone()) # sample images from noise and graph batch
+
+                # get higNN vis
+                zero_input = torch.zeros((logging_batch.image.shape[0], net.img_channels+1, net.img_resolution, net.img_resolution), device=device)
+                init_gnn_emb, _ = net.unet.init_hignn(zero_input, logging_batch.to(device))
+                init_gnn_emb = init_gnn_emb[:, :3].cpu().detach().numpy().transpose(0,2,3,1)
+
+                logging_generate_sample_vis(logging_batch, sampled, init_gnn_emb) # log images to wandb
 
         # Save network snapshot.
         if snapshot_nimg is not None and state.cur_nimg % snapshot_nimg == 0 and (state.cur_nimg != start_nimg or start_nimg == 0) and dist.get_rank() == 0:
