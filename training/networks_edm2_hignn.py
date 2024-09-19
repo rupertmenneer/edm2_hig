@@ -129,6 +129,7 @@ class Block(torch.nn.Module):
         dropout             = 0,        # Dropout probability.
         res_balance         = 0.3,      # Balance between main branch (0) and residual branch (1).
         attn_balance        = 0.3,      # Balance between main branch (0) and self-attention (1).
+        graph_balance       = 0.5,      # Balance between residual branch (0) and HIG Graph Neural Network (1).
         clip_act            = 256,      # Clip output activations. None = do not clip.
         gnn_metadata        = None,     # MODIFICATION: use dual_gnn for conditioning, if not None must supply gnn meta data for lazy initialisation
     ):
@@ -141,6 +142,7 @@ class Block(torch.nn.Module):
         self.dropout = dropout
         self.res_balance = res_balance
         self.attn_balance = attn_balance
+        self.graph_balance = graph_balance
         self.clip_act = clip_act
         self.emb_gain = torch.nn.Parameter(torch.zeros([]))
         self.conv_res0 = MPConv(out_channels if flavor == 'enc' else in_channels, out_channels, kernel=[3,3])
@@ -170,7 +172,8 @@ class Block(torch.nn.Module):
         # if hignn is present, apply here - before residual, after normalization and resizing
         apply_hignn = graph is not None and self.hignn is not None
         if apply_hignn:
-            y, graph = self.hignn(y, graph)    
+            hig_out, graph = self.hignn(y, graph)
+            y = mp_sum(y.to(x.dtype), hig_out.to(x.dtype), t=self.graph_balance)    
     
         # Connect the branches.
         if self.flavor == 'dec' and self.conv_skip is not None:
@@ -249,8 +252,8 @@ class UNet(torch.nn.Module):
             for idx in range(num_blocks[level]):
                 cin = cout
                 cout = channels
-                # self.enc[f'{res}x{res}_block{idx}'] = Block(cin, cout, cemb, flavor='enc', attention=(res in attn_resolutions), gnn_metadata=(gnn_metadata if res in gnn_resolutions else None), **block_kwargs)
-                self.enc[f'{res}x{res}_block{idx}'] = Block(cin, cout, cemb, flavor='enc', attention=(res in attn_resolutions), gnn_metadata=None, **block_kwargs)
+                self.enc[f'{res}x{res}_block{idx}'] = Block(cin, cout, cemb, flavor='enc', attention=(res in attn_resolutions), gnn_metadata=(gnn_metadata if res in gnn_resolutions else None), **block_kwargs)
+                # self.enc[f'{res}x{res}_block{idx}'] = Block(cin, cout, cemb, flavor='enc', attention=(res in attn_resolutions), gnn_metadata=None, **block_kwargs)
 
         # Decoder.
         self.dec = torch.nn.ModuleDict()

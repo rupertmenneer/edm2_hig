@@ -79,7 +79,7 @@ class HIGnnInterface(torch.nn.Module):
         
         out = self.extract_image_nodes(graph, x.shape) # extract and resize image nodes back to image
 
-        # out = self.out_conv(out, gain=self.out_gain).to(x.dtype) # out conv with zero initialised gain
+        out = self.out_conv(out, gain=self.out_gain).to(x.dtype) # out conv with zero initialised gain
         out = normalize(out, dim=1) # pixel norm
 
         return out, graph
