@@ -84,7 +84,6 @@ def edm_sampler(
     # Main sampling loop.
     x_next = noise.to(dtype) * t_steps[0]
     for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])): # 0, ..., N-1
-        print(f"sampling step {i}")
         x_cur = x_next
 
         # Increase noise temporarily.

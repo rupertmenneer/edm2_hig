@@ -252,8 +252,7 @@ class UNet(torch.nn.Module):
             for idx in range(num_blocks[level]):
                 cin = cout
                 cout = channels
-                self.enc[f'{res}x{res}_block{idx}'] = Block(cin, cout, cemb, flavor='enc', attention=(res in attn_resolutions), gnn_metadata=(gnn_metadata if res in gnn_resolutions else None), **block_kwargs)
-                # self.enc[f'{res}x{res}_block{idx}'] = Block(cin, cout, cemb, flavor='enc', attention=(res in attn_resolutions), gnn_metadata=None, **block_kwargs)
+                self.enc[f'{res}x{res}_block{idx}'] = Block(cin, cout, cemb, flavor='enc', attention=(res in attn_resolutions), gnn_metadata=(gnn_metadata if res in gnn_resolutions and idx==1 else None), **block_kwargs)
 
         # Decoder.
         self.dec = torch.nn.ModuleDict()
@@ -294,7 +293,6 @@ class UNet(torch.nn.Module):
             if isinstance(x, tuple): # MODIFICATION: unpack graph if hignn is present
                 x, graph = x
             if f'{32}x{32}_conv' in name:
-                # x = mp_sum(x, mask_emb.to(x.dtype), t=self.label_balance)
                 x = mp_sum(x, init_gnn_emb.to(x.dtype), t=self.label_balance)
             skips.append(x)
 

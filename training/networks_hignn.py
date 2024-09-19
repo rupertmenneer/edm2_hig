@@ -41,7 +41,6 @@ class HIGnnInterface(torch.nn.Module):
         self.gnn = torch_geometric.nn.to_hetero(gnn, metadata, aggr="mean")
 
         self.out_gain = torch.nn.Parameter(torch.zeros([]))
-        self.out_conv = MPConv(gnn_channels, gnn_channels, kernel=[3,3])
 
     def update_graph_image_nodes(self, x, graph):
         _,c,h,w = x.shape
@@ -75,15 +74,14 @@ class HIGnnInterface(torch.nn.Module):
 
         graph = self.update_graph_image_nodes(x, graph) # update and resize image nodes on graph with current feature map
         graph = self.apply_mp_scaling(graph) # apply MP scaling to one hot class nodes
-   
+      
         y = self.gnn(graph.x_dict, graph.edge_index_dict, graph.edge_attr_dict) # pass dual graph through GNN
 
         graph = self.update_graph_embeddings(y, graph) # update graph with new embeddings
         
         out = self.extract_image_nodes(graph, x.shape) # extract and resize image nodes back to image
 
-        out = self.out_conv(out, gain=self.out_gain).to(x.dtype) # out conv with zero initialised gain
-        out = normalize(out, dim=1) # pixel norm
+        out = normalize(out, dim=1) * self.out_gain # pixel norm
 
         return out, graph
 

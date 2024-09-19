@@ -223,7 +223,7 @@ def training_loop(
                 graph = copy.deepcopy(logging_batch) # ensure deepcopy of logging batch each call
                 noise = torch.randn((graph.image.shape[0], net.img_channels, net.img_resolution, net.img_resolution), device=device)
 
-                print(f"sampling with image shape {noise.shape} and graph {graph}")
+                print(f"sampling with image shape {noise.shape}")
                 sampled = edm_sampler(net=ddp, noise=noise, graph=graph) # sample images from noise and graph batch
 
                 # get higNN vis
@@ -266,6 +266,7 @@ def training_loop(
             with misc.ddp_sync(ddp, (round_idx == num_accumulation_rounds - 1)):
                 graph_batch = next(dataset_iterator).to(device)
                 graph_batch.image_latents = encoder.encode_latents(graph_batch.image.to(device))
+
                 loss = loss_fn(net=ddp, graph=graph_batch,)
                 training_stats.report('Loss/loss', loss)
                 if dist.get_rank() == 0 and wandb.run is not None:
