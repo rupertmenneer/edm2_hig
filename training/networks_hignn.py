@@ -40,7 +40,7 @@ class HIGnnInterface(torch.nn.Module):
         gnn = MP_GNN(gnn_channels, num_gnn_layers)
         self.gnn = torch_geometric.nn.to_hetero(gnn, metadata, aggr="mean")
 
-        self.out_gain = torch.nn.Parameter(torch.zeros([]))
+        self.out_gain = torch.nn.Parameter(torch.ones([]))
 
     def update_graph_image_nodes(self, x, graph):
         _,c,h,w = x.shape
@@ -135,7 +135,7 @@ class MP_Sum_Aggregation(torch_geometric.nn.Aggregation):
         sqrt_N = torch.sqrt(N).unsqueeze(-1)  # take sqrt of bincount to adhere to magnitude-preserving scaling
 
         mean_out = self.reduce(x, index, ptr, dim_size, dim, reduce='sum') # mean aggregation of local neighbourhood
-        print(mean_out.shape, sqrt_N.shape)
+
         mean_out = mean_out / sqrt_N # apply magnitude-preserving scaling
 
         return mean_out
@@ -186,7 +186,6 @@ class MP_HIPGnnConv(torch_geometric.nn.MessagePassing):
             out_r = self.lin_r(x_r).to(x[0].dtype) # right weight matrix
             out = mp_sum(out.to(x[0].dtype), out_r) # apply right weight matrix and MP sum to connect branches
 
-        print('out', torch.norm(out, dim=1))
         return out
 
     def propagate(self, edge_index, size=None, **kwargs):
@@ -308,29 +307,4 @@ class MP_GeoLinear(torch.nn.Module):
     def __repr__(self) -> str:
         return (f'{self.__class__.__name__}({self.in_channels}, '
                 f'{self.out_channels},)')
-    
-
-#----------------------------------------------------------------------------
-# Magnitude-preserving convolution or fully-connected layer (Equation 47)
-# with force weight normalization (Equation 66).
-
-@persistence.persistent_class
-class MPConv(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, kernel):
-        super().__init__()
-        self.out_channels = out_channels
-        self.weight = torch.nn.Parameter(torch.randn(out_channels, in_channels, *kernel))
-
-    def forward(self, x, gain=1):
-        w = self.weight.to(torch.float32)
-        if self.training:
-            with torch.no_grad():
-                self.weight.copy_(normalize(w)) # forced weight normalization
-        w = normalize(w) # traditional weight normalization
-        w = w * (gain / np.sqrt(w[0].numel())) # magnitude-preserving scaling
-        w = w.to(x.dtype)
-        if w.ndim == 2:
-            return x @ w.t()
-        assert w.ndim == 4
-        return torch.nn.functional.conv2d(x, w, padding=(w.shape[-1]//2,))
     
