@@ -200,25 +200,16 @@ def visualise_het_graph_on_image(
     node_colors = get_node_colors(G)
 
     nodes_alphas = [0.9 if 'class_node' in n else 0. for n in G.nodes()]
-    nodes_size = [10 if 'class_node' in n else 0.0 for n in G.nodes()]
+    nodes_size = [50 if 'class_node' in n else 0.0 for n in G.nodes()]
     # Draw the graph on top of the image
     nx.draw(G, pos, with_labels=False, node_size=nodes_size, alpha=nodes_alphas, node_color=node_colors, width=linewidth, ax=ax, edgelist=[])
     
+    # Batch draw edges
     edges = G.edges(data=True)
-    edge_alphas = [0.25 if 'class_edge' in e[2]['type'] else 0.1 for e in edges]
-    edge_widths = [0.75 if 'class_edge' in e[2]['type'] else 0.5 for e in edges]
-    edge_styles = ['dashed' if 'class_edge' in e[2]['type'] else 'solid' for e in edges]
-    edge_colors = ['black' if 'class_edge' in e[2]['type'] else 'white' for e in edges]
-    
-    for i, (u, v, data) in enumerate(edges):        
-        nx.draw_networkx_edges(
-            G, pos,
-            edgelist=[(u, v)],
-            edge_color=edge_colors[i],
-            alpha=edge_alphas[i],
-            width=edge_widths[i],
-            style=edge_styles[i],
-        )
+    class_edges = [(u, v) for u, v, d in edges if d['type'] == ('class_node', 'class_edge', 'class_node')]
+    image_edges = [(u, v) for u, v, d in edges if d['type'] == ('class_node', 'class_to_image', 'image_node')]
+    nx.draw_networkx_edges(G, pos, edgelist=class_edges, edge_color='black', alpha=0.25, width=0.75, style='dashed', ax=ax)
+    nx.draw_networkx_edges(G, pos, edgelist=image_edges, edge_color='white', alpha=0.1, width=0.5, style='solid', ax=ax)
 
     ax.set_aspect("equal")
     ax.grid(False)
