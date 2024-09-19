@@ -217,6 +217,7 @@ class UNet(torch.nn.Module):
         attn_resolutions    = [8,4],        # List of resolutions with self-attention.
         gnn_resolutions     = [32],         # MODIFICATION: List of resolutions with self-attention.
         gnn_metadata        = None,         # MODIFICATION: Metadata for dual gnn
+        gnn_classes         = 256,         # MODIFICATION: Metadata for dual gnn
         label_balance       = 0.5,          # Balance between noise embedding (0) and class embedding (1).
         concat_balance      = 0.5,          # Balance between skip connections (0) and main path (1).
         **block_kwargs,                     # Arguments for Block.
@@ -234,9 +235,7 @@ class UNet(torch.nn.Module):
         self.emb_fourier = MPFourier(cnoise)
         self.emb_noise = MPConv(cnoise, cemb, kernel=[])
         self.emb_label = MPConv(label_dim, cemb, kernel=[]) if label_dim != 0 else None
-        self.mask_classes = 256
-        # self.emb_mask = MPConv(self.mask_classes, model_channels, kernel=[1,1]) # 1x1 conv to map mask labels to image
-        self.init_hignn =  HIGnnInterface(gnn_metadata, model_channels) if gnn_metadata is not None else None
+        self.emb_graph = MPConv(gnn_classes, model_channels, kernel=[1,1]) # 1x1 conv to map mask labels to image
 
         # Encoder.
         self.enc = torch.nn.ModuleDict()
@@ -252,7 +251,7 @@ class UNet(torch.nn.Module):
             for idx in range(num_blocks[level]):
                 cin = cout
                 cout = channels
-                self.enc[f'{res}x{res}_block{idx}'] = Block(cin, cout, cemb, flavor='enc', attention=(res in attn_resolutions), gnn_metadata=(gnn_metadata if res in gnn_resolutions and idx==1 else None), **block_kwargs)
+                self.enc[f'{res}x{res}_block{idx}'] = Block(cin, cout, cemb, flavor='enc', attention=(res in attn_resolutions), gnn_metadata=(gnn_metadata if res in gnn_resolutions else None), **block_kwargs)
 
         # Decoder.
         self.dec = torch.nn.ModuleDict()
@@ -277,23 +276,16 @@ class UNet(torch.nn.Module):
             emb = mp_sum(emb, self.emb_label(class_labels * np.sqrt(class_labels.shape[1])), t=self.label_balance)
         emb = mp_silu(emb)
 
-        # apply mask conditioning
-        # resized_mask = torch.nn.functional.interpolate(graph.mask.to(torch.float32), x.shape[-1], mode='nearest').to(torch.int64).to(x.device)
-        # one_hot = torch.nn.functional.one_hot(resized_mask, num_classes=self.mask_classes).squeeze(1).permute(0,3,1,2)
-        # mask_emb = mp_silu(self.emb_mask(one_hot * np.sqrt(self.mask_classes)))
+        if graph is not None:
+            graph = self.graph_proj(graph)
 
         # Encoder.
         x = torch.cat([x, torch.ones_like(x[:, :1])], dim=1)
-
-        init_gnn_emb, graph = self.init_hignn(x, graph)
-
         skips = []
         for name, block in self.enc.items():
             x = block(x) if 'conv' in name else block(x, emb=emb, graph=graph) # MODIFICATION: pass graph to encoder blocks
             if isinstance(x, tuple): # MODIFICATION: unpack graph if hignn is present
                 x, graph = x
-            if f'{32}x{32}_conv' in name:
-                x = mp_sum(x, init_gnn_emb.to(x.dtype), t=self.label_balance)
             skips.append(x)
 
         # Decoder.
@@ -303,6 +295,11 @@ class UNet(torch.nn.Module):
             x = block(x, emb)
         x = self.out_conv(x, gain=self.out_gain)
         return x
+    
+    def graph_proj(self, graph, one_hot_labels=['class_node']):
+        for key in one_hot_labels:
+            graph[key].x = mp_silu(self.emb_graph(graph[key].x * np.sqrt(graph[key].x.shape[1]))) # MP scaling and proj for cond node 
+        return graph
 
 #----------------------------------------------------------------------------
 # Preconditioning and uncertainty estimation.
