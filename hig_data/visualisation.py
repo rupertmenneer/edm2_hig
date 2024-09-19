@@ -43,8 +43,9 @@ def plot_array_images(images, n=8, save_path=None):
 def logging_generate_sample_vis(
         batch,
         sampled_images,
+        init_gnn_emb,
         n=8,
-        labels=['HIG', 'Ground Truth Decoded Latents', 'Sampled Image'],
+        labels=['HIG', 'Ground Truth Decoded Latents', 'Sampled Image', 'HIGnn Output'],
         title="Sampled Images - Training Graphs",
         latent_images=True,
         **kwargs,
@@ -65,7 +66,8 @@ def logging_generate_sample_vis(
     # save to wandb
     save_image_batch_list([graph_on_image_tensor,
                            images,
-                           sampled_images_pixels,],
+                           sampled_images_pixels,
+                           init_gnn_emb],
                             row_labels=labels,
                             title=title,
                             sample_batch_size=n)
