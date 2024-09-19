@@ -228,7 +228,7 @@ def training_loop(
 
                 # get higNN vis
                 zero_input = torch.zeros((graph.image.shape[0], network_kwargs.model_channels, net.img_resolution, net.img_resolution), device=device)
-                init_gnn_emb, _ = net.unet.enc['32x32_block0'].hignn(zero_input, graph.to(device))
+                init_gnn_emb, _ = net.unet.enc['32x32_block0'].hignn(zero_input, net.unet.graph_proj(graph.to(device)))
                 init_gnn_emb = np.clip(init_gnn_emb[:, :3].cpu().detach().numpy().transpose(0,2,3,1), 0, 1) # clip for vis
 
                 print(f"logging samples to wandb vis..")
