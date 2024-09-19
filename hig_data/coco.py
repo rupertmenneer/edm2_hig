@@ -352,8 +352,7 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
         data.mask_path = mask_path # add mask to data object
 
         # ---- IMAGE
-        image_patch_placeholder = torch.empty((data.image.shape[-2]*data.image.shape[-1], 1), dtype=torch.float32)
-        print(image_patch_placeholder.shape)
+        image_patch_placeholder = torch.empty((data.image.shape[-2]*data.image.shape[-1], 1), dtype=torch.float32) # must init be same size for correct minibatching
         data['image_node'].x = image_patch_placeholder
         data['image_node'].pos = self.image_patch_positions
 
