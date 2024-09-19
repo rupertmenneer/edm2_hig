@@ -124,6 +124,7 @@ def training_loop(
     encoder = dnnlib.util.construct_class_by_name(**encoder_kwargs)
     ref_image = encoder.encode_latents(torch.as_tensor(ref_image).to(device))
     dist.print0('Constructing network...')
+
     interface_kwargs = dict(img_resolution=ref_image.shape[-1], img_channels=ref_image.shape[1], gnn_metadata=ref_graph.metadata())
     net = dnnlib.util.construct_class_by_name(**network_kwargs, **interface_kwargs)
 
@@ -131,10 +132,10 @@ def training_loop(
     # Print network summary.
     if dist.get_rank() == 0:
         misc.print_module_summary(net, [
-            torch.zeros([batch_gpu, net.img_channels, net.img_resolution, net.img_resolution], device=device),
-            torch.ones([batch_gpu], device=device),
+            torch.zeros([1, net.img_channels, net.img_resolution, net.img_resolution], device=device),
+            torch.ones([1,], device=device),
             ref_graph.to(device),
-            torch.zeros([batch_gpu, net.label_dim], device=device),
+            torch.zeros([1, net.label_dim], device=device),
         ], max_nesting=2)
 
     net.train().requires_grad_(True).to(device)
@@ -218,6 +219,7 @@ def training_loop(
         if wandb.run is not None and wandb_nimg is not None and (done or state.cur_nimg % wandb_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0):
             # wandb logging rank 0 only
             with torch.no_grad():
+
                 noise = torch.randn((logging_batch.image.shape[0], net.img_channels, net.img_resolution, net.img_resolution), device=device)
                 sampled = edm_sampler(net=ddp, noise=noise, graph=logging_batch.clone()) # sample images from noise and graph batch
 
