@@ -255,7 +255,7 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
                 graph_transform = None,     # Transform to apply to the graph.
                 max_size    = None,         # Maximum number of items to load.
                 random_seed = 0,            # Random seed to use when applying max_size.
-                cache       = True,    # Cache images in CPU memory?
+                cache       = True,         # Cache images in CPU memory?
         ) -> None:
 
         super().__init__(None, graph_transform)
@@ -323,32 +323,32 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
     
     def _load_coco_files(self, idx):
         raw_idx = self._raw_idx[idx]
-        mask_path = os.path.join(self._path, self._data_fnames[raw_idx]) + self._suffixes[1]
 
         if self._cache and raw_idx in self._cached_idxs:
-            return self._cached_images[raw_idx], (self._cached_masks[raw_idx], mask_path), self._cached_graphs[raw_idx]
+            return self._cached_images[raw_idx], self._cached_masks[raw_idx], self._cached_graphs[raw_idx]
 
         img = self._load_np_from_path(self._data_fnames[raw_idx] + self._suffixes[0])
-        mask = self._load_np_from_path(self._data_fnames[raw_idx] + self._suffixes[1])
+        # mask = self._load_np_from_path(self._data_fnames[raw_idx] + self._suffixes[1])
+        mask_path = os.path.join(self._path, self._data_fnames[raw_idx]) + self._suffixes[1]
         graph = self._load_np_from_path(self._data_fnames[raw_idx] + self._suffixes[2])
 
         if self._cache:
             self._cached_images[raw_idx] = img
-            self._cached_masks[raw_idx] = mask # store path to mask as only used for vis
+            self._cached_masks[raw_idx] = mask_path # store path to mask as only used for vis
             self._cached_graphs[raw_idx] = graph
             self._cached_idxs[raw_idx] = True
 
-        return img, (mask, mask_path), graph
+        return img, mask_path, graph
 
     # construct a hig from raw data item 
     def __getitem__(self, idx: int) -> HeteroData:
 
         data = RelaxedHeteroData() # create hetero data object for hig
 
-        img, (mask, mask_path), graphs = self._load_coco_files(idx)
+        img, mask_path, graphs = self._load_coco_files(idx)
 
         data.image = torch.from_numpy(img[np.newaxis,...]).to(torch.float32) # add image to data object
-        data.mask = torch.from_numpy(mask[np.newaxis,...]).to(torch.int64) # add mask to data object
+        # data.mask = torch.from_numpy(mask[np.newaxis,...]).to(torch.int64) # add mask to data object
         data.mask_path = mask_path # add mask to data object
 
         # ---- IMAGE
