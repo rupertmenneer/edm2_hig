@@ -72,7 +72,9 @@ class HIGnnInterface(torch.nn.Module):
 
         graph = self.update_graph_image_nodes(x, graph) # update and resize image nodes on graph with current feature map
         graph = self.apply_mp_scaling(graph) # apply MP scaling to one hot class nodes
-        
+
+        print('input x_dict', [v.shape for k,v in graph.x_dict.items()])
+        print(self.gnn.gnn_layers)        
         y = self.gnn(graph.x_dict, graph.edge_index_dict, graph.edge_attr_dict) # pass dual graph through GNN
 
         graph = self.update_graph_embeddings(y, graph) # update graph with new embeddings

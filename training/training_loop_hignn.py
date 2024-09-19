@@ -170,7 +170,7 @@ def training_loop(
 
     # create fixed logging batch
     logging_iter = iter(dnnlib.util.construct_class_by_name(dataset=dataset_obj, sampler=dataset_sampler, batch_size=8, **data_loader_kwargs))
-    logging_batch = copy.copy(next(logging_iter).clone().detach())
+    logging_batch = next(logging_iter).clone().detach()
     while True:
         done = (state.cur_nimg >= stop_at_nimg)
 
@@ -220,15 +220,20 @@ def training_loop(
             # wandb logging rank 0 only
             with torch.no_grad():
 
-                noise = torch.randn((logging_batch.image.shape[0], net.img_channels, net.img_resolution, net.img_resolution), device=device)
-                sampled = edm_sampler(net=ddp, noise=noise, graph=logging_batch.clone()) # sample images from noise and graph batch
+                graph = copy.deepcopy(logging_batch) # ensure deepcopy of logging batch each call
+                noise = torch.randn((graph.image.shape[0], net.img_channels, net.img_resolution, net.img_resolution), device=device)
+
+                print(f"sampling with image shape {noise.shape} and graph {graph}")
+                sampled = edm_sampler(net=ddp, noise=noise, graph=graph) # sample images from noise and graph batch
 
                 # get higNN vis
-                zero_input = torch.zeros((logging_batch.image.shape[0], net.img_channels+1, net.img_resolution, net.img_resolution), device=device)
-                init_gnn_emb, _ = net.unet.init_hignn(zero_input, logging_batch.to(device))
+                zero_input = torch.zeros((graph.image.shape[0], net.img_channels+1, net.img_resolution, net.img_resolution), device=device)
+                init_gnn_emb, _ = net.unet.init_hignn(zero_input, graph.to(device))
                 init_gnn_emb = np.clip(init_gnn_emb[:, :3].cpu().detach().numpy().transpose(0,2,3,1), 0, 1) # clip for vis
 
-                logging_generate_sample_vis(logging_batch, sampled, init_gnn_emb) # log images to wandb
+                print(f"logging samples to wandb vis..")
+                logging_generate_sample_vis(graph, sampled, init_gnn_emb) # log images to wandb
+                print(f"finished.")
 
         # Save network snapshot.
         if snapshot_nimg is not None and state.cur_nimg % snapshot_nimg == 0 and (state.cur_nimg != start_nimg or start_nimg == 0) and dist.get_rank() == 0:
