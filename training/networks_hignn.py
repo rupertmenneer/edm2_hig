@@ -62,19 +62,12 @@ class HIGnnInterface(torch.nn.Module):
         for key, emb in x.items():
             graph[key].x = emb
         return graph
-    
-    def apply_mp_scaling(self, graph, one_hot_labels=['class_node']):
-        for key in one_hot_labels:
-            graph[key].x *= np.sqrt(graph[key].x.shape[1]) # MP scaling for class node 
-        return graph
 
     def forward(self, x, graph):
 
         assert x.shape[0] == graph.image.shape[0], "Batch size mismatch between input and graph"
 
         graph = self.update_graph_image_nodes(x, graph) # update and resize image nodes on graph with current feature map
-        graph = self.apply_mp_scaling(graph) # apply MP scaling to one hot class nodes
-      
         y = self.gnn(graph.x_dict, graph.edge_index_dict, graph.edge_attr_dict) # pass dual graph through GNN
 
         graph = self.update_graph_embeddings(y, graph) # update graph with new embeddings
@@ -93,13 +86,11 @@ class MP_GNN(torch.nn.Module):
 
     def __init__(self, hidden_channels, num_gnn_layers=2,):
         super().__init__()
-
         self.gnn_layers = torch.nn.ModuleList()
-        # self.gnn_layers.append(MP_GeoLinear(-1, hidden_channels,)) # projection layer
         for _ in range(num_gnn_layers):
             self.gnn_layers.append(MP_HIPGnnConv((-1,-1), hidden_channels)) # gnn layers
 
-    def forward(self, x, edge_index, edge_attr):
+    def forward(self, x, edge_index, edge_attr):        
         for block in self.gnn_layers:
             x = block(x) if isinstance(block, (MP_GeoLinear)) else block(heterogenous_mp_silu(x), edge_index=edge_index, edge_attr=edge_attr)
         return x
@@ -135,10 +126,16 @@ class MP_Sum_Aggregation(torch_geometric.nn.Aggregation):
                 ptr: Optional[torch.Tensor] = None, dim_size: Optional[int] = None,
                 dim: int = -2) -> torch.Tensor:
                 
-        N = torch.bincount(index).clamp(min=1).float() # clamp to a minimum of 1
+        if dim_size is None:
+            dim_size = int(index.max()) + 1 if index.numel() > 0 else 0
+        # Compute the number of neighbors (N) for each node
+        bincount = torch.bincount(index, minlength=dim_size)
+        N = bincount.clamp(min=1).float()
+
         sqrt_N = torch.sqrt(N).unsqueeze(-1)  # take sqrt of bincount to adhere to magnitude-preserving scaling
 
         mean_out = self.reduce(x, index, ptr, dim_size, dim, reduce='sum') # mean aggregation of local neighbourhood
+        print(mean_out.shape, sqrt_N.shape)
         mean_out = mean_out / sqrt_N # apply magnitude-preserving scaling
 
         return mean_out
@@ -189,6 +186,7 @@ class MP_HIPGnnConv(torch_geometric.nn.MessagePassing):
             out_r = self.lin_r(x_r).to(x[0].dtype) # right weight matrix
             out = mp_sum(out.to(x[0].dtype), out_r) # apply right weight matrix and MP sum to connect branches
 
+        print('out', torch.norm(out, dim=1))
         return out
 
     def propagate(self, edge_index, size=None, **kwargs):
