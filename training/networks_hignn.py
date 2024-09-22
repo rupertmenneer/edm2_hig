@@ -40,7 +40,7 @@ class HIGnnInterface(torch.nn.Module):
         super().__init__()
 
         # Calculate MP preserving meta-path factors - scale by sqrt(n_metapaths) for each node type
-        node_types, edge_types = metadata.metadata()
+        node_types, edge_types = metadata
         incoming_meta_paths_per_node = defaultdict(int, {node_type: 1/np.sqrt(sum(1 for _, _, dst in edge_types if dst == node_type)) for node_type in node_types})
 
         gnn = MP_GNN(gnn_channels, num_gnn_layers, incoming_meta_paths_per_node)
@@ -91,7 +91,8 @@ class HIGnnInterface(torch.nn.Module):
 
 class MP_GNN(torch.nn.Module):
 
-    def __init__(self, hidden_channels, num_gnn_layers=2, mp_meta_path_factors = None):
+    def __init__(self, hidden_channels, num_gnn_layers:int=2, mp_meta_path_factors = None):
+
         super().__init__()
         self.mp_meta_path_factors = mp_meta_path_factors
         self.gnn_layers = torch.nn.ModuleList()
