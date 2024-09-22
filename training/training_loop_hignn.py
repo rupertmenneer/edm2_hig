@@ -20,6 +20,7 @@ from torch_utils import training_stats
 from torch_utils import persistence
 from torch_utils import misc
 import wandb
+from datetime import datetime
 os.environ["WANDB_DISABLE_GPU"] = "true"
 os.environ['WANDB_CACHE_DIR'] = '/home/rfsm2/rds/hpc-work/edm2_hig/wandb'
 
@@ -100,6 +101,12 @@ def training_loop(
     torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
     # Enable the W&B service mode
     
+    
+
+    # Get current date and time
+    now = datetime.now()
+    formatted_date_time = now.strftime("%b_%d_hr_%H")
+    ckpt_name = f"{preset_name}_{formatted_date_time}"
     if wandb_kwargs['mode'] != 'disabled' and dist.get_rank() == 0: # init wandb if not already
         wandb.require("service")
         wandb.init(**wandb_kwargs, name=f"{preset_name}_bs_{batch_size}_seed_{seed}")
@@ -133,15 +140,16 @@ def training_loop(
     net = dnnlib.util.construct_class_by_name(**network_kwargs, **interface_kwargs)
 
     net.train().to(device)
-    # Print network summary.
-    if dist.get_rank() == 0:
-        misc.print_module_summary(net, [
+    inputs = [
             torch.zeros([1, net.img_channels, net.img_resolution, net.img_resolution], device=device),
             torch.ones([1,], device=device),
             ref_graph.to(device),
             torch.zeros([1, net.label_dim], device=device),
-        ], max_nesting=2)
-
+        ]
+    # Print network summary.
+    if dist.get_rank() == 0:
+        misc.print_module_summary(net, inputs, max_nesting=2)
+    outputs = net(*inputs) # must pass through inputs for lazy initisation (on all ranks)
     net.train().requires_grad_(True).to(device)
 
     # Setup training state.
@@ -250,7 +258,7 @@ def training_loop(
             for ema_net, ema_suffix in ema_list:
                 data = dnnlib.EasyDict(encoder=encoder, dataset_kwargs=dataset_kwargs, loss_fn=loss_fn)
                 data.ema = copy.deepcopy(ema_net).cpu().eval().requires_grad_(False).to(torch.float16)
-                fname = f'network-snapshot-{state.cur_nimg//1000:07d}{ema_suffix}.pkl'
+                fname = ckpt_name+f'-snapshot-{state.cur_nimg//1000:07d}{ema_suffix}.pkl'
                 dist.print0(f'Saving {fname} ... ', end='', flush=True)
                 with open(os.path.join(run_dir, fname), 'wb') as f:
                     pickle.dump(data, f)
@@ -259,7 +267,7 @@ def training_loop(
 
         # Save state checkpoint.
         if checkpoint_nimg is not None and (done or state.cur_nimg % checkpoint_nimg == 0) and state.cur_nimg != start_nimg:
-            checkpoint.save(os.path.join(run_dir, f'training-state-{state.cur_nimg//1000:07d}.pt'))
+            checkpoint.save(os.path.join(run_dir, ckpt_name+f'training-state-{state.cur_nimg//1000:07d}.pt'))
             misc.check_ddp_consistency(net)
 
         # Done?
