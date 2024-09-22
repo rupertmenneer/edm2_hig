@@ -119,6 +119,9 @@ def training_loop(
     # Setup dataset, encoder, and network.
     dist.print0('Loading dataset...')
     dataset_obj = dnnlib.util.construct_class_by_name(**dataset_kwargs)
+    val_kwargs = copy.deepcopy(dataset_kwargs)
+    val_kwargs['path'] = val_kwargs['val_path']
+    val_dataset_obj = dnnlib.util.construct_class_by_name(**val_kwargs)
     ref_graph = dataset_obj[0]
     ref_image = ref_graph.image
     dist.print0('Setting up encoder...')
@@ -171,7 +174,9 @@ def training_loop(
 
     # create fixed logging batch
     logging_iter = iter(dnnlib.util.construct_class_by_name(dataset=dataset_obj, sampler=dataset_sampler, batch_size=8, **data_loader_kwargs))
+    logging_iter_val = iter(dnnlib.util.construct_class_by_name(dataset=val_dataset_obj, sampler=dataset_sampler, batch_size=8, **data_loader_kwargs))
     logging_batch = next(logging_iter).clone().detach()
+    logging_batch_val = next(logging_iter_val).clone().detach()
     while True:
         done = (state.cur_nimg >= stop_at_nimg)
 
@@ -220,21 +225,23 @@ def training_loop(
         if wandb.run is not None and wandb_nimg is not None and (done or state.cur_nimg % wandb_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0):
             # wandb logging rank 0 only
             with torch.no_grad():
+                # sample images from training and validation
+                for batch in [logging_batch, logging_batch_val]:
+                    
+                    dist.print0(f"Sampling with image shape {noise.shape}")
+                    # Samples
+                    graph = copy.deepcopy(batch) # ensure deepcopy of logging batch each call
+                    noise = torch.randn((graph.image.shape[0], net.img_channels, net.img_resolution, net.img_resolution), device=device)
+                    sampled = edm_sampler(net=ddp, gnet=ddp, noise=noise, graph=graph) # sample images from noise and graph batch
 
-                graph = copy.deepcopy(logging_batch) # ensure deepcopy of logging batch each call
-                noise = torch.randn((graph.image.shape[0], net.img_channels, net.img_resolution, net.img_resolution), device=device)
-
-                print(f"sampling with image shape {noise.shape}")
-                sampled = edm_sampler(net=ddp, gnet=ddp, noise=noise, graph=graph) # sample images from noise and graph batch
-
-                # get higNN vis
-                zero_input = torch.zeros((graph.image.shape[0], network_kwargs.model_channels, net.img_resolution, net.img_resolution), device=device)
-                init_gnn_emb, _ = net.unet.enc['32x32_block0'].hignn(zero_input, net.unet.graph_proj(graph.to(device)))
-                init_gnn_emb = np.clip(init_gnn_emb[:, :3].cpu().detach().numpy().transpose(0,2,3,1), 0, 1) # clip for vis
-
-                print(f"logging samples to wandb vis..")
-                logging_generate_sample_vis(graph, sampled, init_gnn_emb) # log images to wandb
-                print(f"finished.")
+                    # Create HIGNN embedding for logging
+                    zero_input = torch.zeros((graph.image.shape[0], network_kwargs.model_channels, net.img_resolution, net.img_resolution), device=device)
+                    init_gnn_emb, _ = net.unet.enc['32x32_block0'].hignn(zero_input, net.unet.graph_proj(graph.to(device)))
+                    init_gnn_emb = np.clip(init_gnn_emb[:, :3].cpu().detach().numpy().transpose(0,2,3,1), 0, 1) # clip for vis
+                    
+                    dist.print0(f"Logging samples to wandb..")
+                    logging_generate_sample_vis(graph, sampled, init_gnn_emb) # log images to wandb
+                    dist.print0(f"Finished.")
 
         # Save network snapshot.
         if snapshot_nimg is not None and state.cur_nimg % snapshot_nimg == 0 and (state.cur_nimg != start_nimg or start_nimg == 0) and dist.get_rank() == 0:
