@@ -37,8 +37,8 @@ class EDM2Loss:
         self.P_std = P_std
         self.sigma_data = sigma_data
 
-    def __call__(self, net, graph, labels=None):
-        images = graph.image_latents
+    def __call__(self, net, images, graph=None, labels=None):
+        
         rnd_normal = torch.randn([images.shape[0], 1, 1, 1], device=images.device)
         sigma = (rnd_normal * self.P_std + self.P_mean).exp()
         weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
@@ -89,6 +89,7 @@ def training_loop(
     preset_name          = None,     # Name of the preset for logging.
 
     device              = torch.device('cuda'),
+    cfg_dropout         = 0.0,
 ):
     # Initialize.
     prev_status_time = time.time()
@@ -266,8 +267,8 @@ def training_loop(
             with misc.ddp_sync(ddp, (round_idx == num_accumulation_rounds - 1)):
                 graph_batch = next(dataset_iterator).to(device)
                 graph_batch.image_latents = encoder.encode_latents(graph_batch.image.to(device))
-
-                loss = loss_fn(net=ddp, graph=graph_batch,)
+                graph_batch = graph_batch if cfg_dropout != 0.0 and np.random.rand() < cfg_dropout else None
+                loss = loss_fn(net=ddp, images = graph.image_latents, graph=graph_batch,)
                 training_stats.report('Loss/loss', loss)
                 if dist.get_rank() == 0 and wandb.run is not None:
                         wandb.log({"train/loss": torch.mean(loss).detach(), "nimg": state.cur_nimg})
