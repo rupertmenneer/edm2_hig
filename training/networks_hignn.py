@@ -8,6 +8,7 @@ import torch_geometric
 from torch_utils import persistence
 import copy
 from typing import Optional
+from collections import defaultdict
 
 #----------------------------------------------------------------------------
 # Magnitude-preserving sum (Equation 88).
@@ -37,11 +38,17 @@ class HIGnnInterface(torch.nn.Module):
         num_gnn_layers=2,
     ):
         super().__init__()
-        gnn = MP_GNN(gnn_channels, num_gnn_layers)
+
+        # Calculate MP preserving meta-path factors - scale by sqrt(n_metapaths) for each node type
+        node_types, edge_types = metadata.metadata()
+        incoming_meta_paths_per_node = defaultdict(int, {node_type: 1/np.sqrt(sum(1 for _, _, dst in edge_types if dst == node_type)) for node_type in node_types})
+
+        gnn = MP_GNN(gnn_channels, num_gnn_layers, incoming_meta_paths_per_node)
         self.gnn = torch_geometric.nn.to_hetero(gnn, metadata, aggr="mean")
 
-        self.out_gain = torch.nn.Parameter(torch.ones([]))
+        self.out_gain = torch.nn.Parameter(torch.zeros([]))
 
+        
     def update_graph_image_nodes(self, x, graph):
         _,c,h,w = x.shape
         reshape_x = x.permute(0, 2, 3, 1).reshape(-1, c) # reshape img to image nodes [B, C, H, W] -> [B * H * W, C]
@@ -84,15 +91,16 @@ class HIGnnInterface(torch.nn.Module):
 
 class MP_GNN(torch.nn.Module):
 
-    def __init__(self, hidden_channels, num_gnn_layers=2,):
+    def __init__(self, hidden_channels, num_gnn_layers=2, mp_meta_path_factors = None):
         super().__init__()
+        self.mp_meta_path_factors = mp_meta_path_factors
         self.gnn_layers = torch.nn.ModuleList()
         for _ in range(num_gnn_layers):
             self.gnn_layers.append(MP_HIPGnnConv((-1,-1), hidden_channels)) # gnn layers
 
     def forward(self, x, edge_index, edge_attr):        
         for block in self.gnn_layers:
-            x = block(x) if isinstance(block, (MP_GeoLinear)) else block(heterogenous_mp_silu(x), edge_index=edge_index, edge_attr=edge_attr)
+            x = block(x) if isinstance(block, (MP_GeoLinear)) else heterogenous_apply_scaling(block(heterogenous_mp_silu(x), edge_index=edge_index, edge_attr=edge_attr), self.mp_meta_path_factors)
         return x
     
 #----------------------------------------------------------------------------
@@ -114,6 +122,9 @@ def mp_silu(x):
 
 def heterogenous_mp_silu(x):
     return {key: mp_silu(x[key]) for key in x.keys()} if isinstance(x, torch.Tensor) else x
+
+def heterogenous_apply_scaling(x, scalings):
+    return {key: x[key]*scalings[key] for key in x.keys()} if isinstance(x, torch.Tensor) else x
 
 #----------------------------------------------------------------------------
 # Magnitude-preserving Graph SAGE Conv
