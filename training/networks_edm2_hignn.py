@@ -151,7 +151,7 @@ class Block(torch.nn.Module):
         self.conv_skip = MPConv(in_channels, out_channels, kernel=[1,1]) if in_channels != out_channels else None
         self.attn_qkv = MPConv(out_channels, out_channels * 3, kernel=[1,1]) if self.num_heads != 0 else None
         self.attn_proj = MPConv(out_channels, out_channels, kernel=[1,1]) if self.num_heads != 0 else None
-        self.hignn = HIGnnInterface(gnn_metadata, out_channels, dropout) if gnn_metadata is not None else None
+        self.hignn = HIGnnInterface(gnn_metadata, out_channels) if gnn_metadata is not None and flavor == 'enc' else None
 
     def forward(self, x, emb, graph = None):
         # Main branch.
@@ -219,7 +219,7 @@ class UNet(torch.nn.Module):
         attn_resolutions    = [8,4],        # List of resolutions with self-attention.
         gnn_resolutions     = [32],         # MODIFICATION: List of resolutions with self-attention.
         gnn_metadata        = None,         # MODIFICATION: Metadata for dual gnn
-        gnn_classes         = 182,         # MODIFICATION: Metadata for dual gnn
+        gnn_classes         = 256,          # MODIFICATION: Metadata for dual gnn
         label_balance       = 0.5,          # Balance between noise embedding (0) and class embedding (1).
         concat_balance      = 0.5,          # Balance between skip connections (0) and main path (1).
         **block_kwargs,                     # Arguments for Block.
