@@ -78,7 +78,7 @@ class StandardRGBEncoder(Encoder):
 @persistence.persistent_class
 class StabilityVAEEncoder(Encoder):
     def __init__(self,
-        vae_name    = 'stabilityai/sd-vae-ft-mse',  # Name of the VAE to use.
+        vae_name    = 'stabilityai/sdxl-vae',  # Name of the VAE to use.
         raw_mean    = [5.81, 3.25, 0.12, -2.15],    # Assumed mean of the raw latents.
         raw_std     = [4.17, 4.62, 3.71, 3.28],     # Assumed standard deviation of the raw latents.
         final_mean  = 0,                            # Desired mean of the final latents.
@@ -133,7 +133,7 @@ class StabilityVAEEncoder(Encoder):
 
 #----------------------------------------------------------------------------
 
-def load_stability_vae(vae_name='stabilityai/sd-vae-ft-mse', device=torch.device('cpu')):
+def load_stability_vae(vae_name='stabilityai/sdxl-vae', device=torch.device('cpu')):
     import dnnlib
     cache_dir = dnnlib.make_cache_dir_path('diffusers')
     os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'

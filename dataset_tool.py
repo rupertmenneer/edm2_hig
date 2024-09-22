@@ -403,7 +403,7 @@ def convert(
 #----------------------------------------------------------------------------
 
 @cmdline.command()
-@click.option('--model-url',  help='VAE encoder model', metavar='URL',                  type=str, default='stabilityai/sd-vae-ft-mse', show_default=True)
+@click.option('--model-url',  help='VAE encoder model', metavar='URL',                  type=str, default='stabilityai/sdxl-vae', show_default=True)
 @click.option('--source',     help='Input directory or archive name', metavar='PATH',   type=str, required=True)
 @click.option('--dest',       help='Output directory or archive name', metavar='PATH',  type=str, required=True)
 @click.option('--max-images', help='Maximum number of images to output', metavar='INT', type=int)
@@ -442,7 +442,7 @@ def encode(
 #----------------------------------------------------------------------------
 
 @cmdline.command()
-@click.option('--model-url',  help='VAE encoder model', metavar='URL',                  type=str, default='stabilityai/sd-vae-ft-mse', show_default=True)
+@click.option('--model-url',  help='VAE encoder model', metavar='URL',                  type=str, default='stabilityai/sdxl-vae', show_default=True)
 @click.option('--source',     help='Input directory or archive name', metavar='PATH',   type=str, required=True)
 @click.option('--dest',       help='Output directory or archive name', metavar='PATH',  type=str, required=True)
 @click.option('--max-images', help='Maximum number of images to output', metavar='INT', type=int)

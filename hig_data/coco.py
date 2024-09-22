@@ -256,6 +256,7 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
                 max_size    = None,         # Maximum number of items to load.
                 random_seed = 0,            # Random seed to use when applying max_size.
                 cache       = True,         # Cache images in CPU memory?
+                **kwargs,                   
         ) -> None:
 
         super().__init__(None, graph_transform)
