@@ -151,7 +151,7 @@ class Block(torch.nn.Module):
         self.conv_skip = MPConv(in_channels, out_channels, kernel=[1,1]) if in_channels != out_channels else None
         self.attn_qkv = MPConv(out_channels, out_channels * 3, kernel=[1,1]) if self.num_heads != 0 else None
         self.attn_proj = MPConv(out_channels, out_channels, kernel=[1,1]) if self.num_heads != 0 else None
-        self.hignn = HIGnnInterface(gnn_metadata, out_channels) if gnn_metadata is not None else None
+        self.hignn = HIGnnInterface(gnn_metadata, out_channels, dropout) if gnn_metadata is not None else None
 
     def forward(self, x, emb, graph = None):
         # Main branch.
@@ -173,6 +173,8 @@ class Block(torch.nn.Module):
         apply_hignn = graph is not None and self.hignn is not None
         if apply_hignn:
             hig_out, graph = self.hignn(y, graph)
+            if self.training and self.dropout != 0:
+                hig_out = torch.nn.functional.dropout(hig_out, p=self.dropout)
             y = mp_sum(y.to(x.dtype), hig_out.to(x.dtype), t=self.graph_balance)    
     
         # Connect the branches.
