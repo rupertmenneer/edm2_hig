@@ -225,7 +225,7 @@ def training_loop(
                 noise = torch.randn((graph.image.shape[0], net.img_channels, net.img_resolution, net.img_resolution), device=device)
 
                 print(f"sampling with image shape {noise.shape}")
-                sampled = edm_sampler(net=ddp, noise=noise, graph=graph) # sample images from noise and graph batch
+                sampled = edm_sampler(net=ddp, gnet=ddp, noise=noise, graph=graph) # sample images from noise and graph batch
 
                 # get higNN vis
                 zero_input = torch.zeros((graph.image.shape[0], network_kwargs.model_channels, net.img_resolution, net.img_resolution), device=device)
