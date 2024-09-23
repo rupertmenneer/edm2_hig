@@ -219,7 +219,6 @@ class UNet(torch.nn.Module):
         attn_resolutions    = [8,4],        # List of resolutions with self-attention.
         gnn_resolutions     = [32],         # MODIFICATION: List of resolutions with self-attention.
         gnn_metadata        = None,         # MODIFICATION: Metadata for dual gnn
-        gnn_classes         = 256,          # MODIFICATION: Metadata for dual gnn
         label_balance       = 0.5,          # Balance between noise embedding (0) and class embedding (1).
         concat_balance      = 0.5,          # Balance between skip connections (0) and main path (1).
         **block_kwargs,                     # Arguments for Block.
@@ -237,7 +236,6 @@ class UNet(torch.nn.Module):
         self.emb_fourier = MPFourier(cnoise)
         self.emb_noise = MPConv(cnoise, cemb, kernel=[])
         self.emb_label = MPConv(label_dim, cemb, kernel=[]) if label_dim != 0 else None
-        self.emb_graph = MPConv(gnn_classes, model_channels, kernel=[]) # 1x1 conv to map mask labels to image
 
         # Encoder.
         self.enc = torch.nn.ModuleDict()
@@ -278,9 +276,6 @@ class UNet(torch.nn.Module):
             emb = mp_sum(emb, self.emb_label(class_labels * np.sqrt(class_labels.shape[1])), t=self.label_balance)
         emb = mp_silu(emb)
 
-        if graph is not None:
-            graph = self.graph_proj(graph)
-
         # Encoder.
         x = torch.cat([x, torch.ones_like(x[:, :1])], dim=1)
         skips = []
@@ -297,11 +292,7 @@ class UNet(torch.nn.Module):
             x = block(x, emb)
         x = self.out_conv(x, gain=self.out_gain)
         return x
-    
-    def graph_proj(self, graph, one_hot_labels=['class_node']):
-        for key in one_hot_labels:
-            graph[key].x = mp_silu(self.emb_graph(graph[key].x * np.sqrt(graph[key].x.shape[1]))) # MP scaling and proj for cond node 
-        return graph
+
 
 #----------------------------------------------------------------------------
 # Preconditioning and uncertainty estimation.
