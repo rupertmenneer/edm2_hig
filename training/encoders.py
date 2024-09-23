@@ -75,12 +75,22 @@ class StandardRGBEncoder(Encoder):
 #----------------------------------------------------------------------------
 # Pre-trained VAE encoder from Stability AI.
 
+# ---- ImageNet (SD)
+#  raw_mean    = [5.81, 3.25, 0.12, -2.15]
+#  raw_std     = [4.17, 4.62, 3.71, 3.28]
+
+# ---- COCO-stuff (SDXL)
+# raw_mean  = [6.56,  1.10,  0.01, -0.31]
+# raw_std   = [4.62, 4.33, 5.51, 4.26]
+
+# ----  Visual Genome
+
 @persistence.persistent_class
 class StabilityVAEEncoder(Encoder):
     def __init__(self,
         vae_name    = 'stabilityai/sdxl-vae',  # Name of the VAE to use.
-        raw_mean    = [5.81, 3.25, 0.12, -2.15],    # Assumed mean of the raw latents.
-        raw_std     = [4.17, 4.62, 3.71, 3.28],     # Assumed standard deviation of the raw latents.
+        raw_mean    = [6.56,  1.10,  0.01, -0.31],  # Assumed mean of the raw latents.
+        raw_std     = [4.62, 4.33, 5.51, 4.26],     # Assumed standard deviation of the raw latents.
         final_mean  = 0,                            # Desired mean of the final latents.
         final_std   = 0.5,                          # Desired standard deviation of the final latents.
         batch_size  = 8,                            # Batch size to use when running the VAE.
