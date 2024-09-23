@@ -132,6 +132,7 @@ class Block(torch.nn.Module):
         graph_balance       = 0.5,      # Balance between residual branch (0) and HIG Graph Neural Network (1).
         clip_act            = 256,      # Clip output activations. None = do not clip.
         gnn_metadata        = None,     # MODIFICATION: use dual_gnn for conditioning, if not None must supply gnn meta data for lazy initialisation
+        gnn_enc_only        = False,    # MODIFICATION: use HIGnn modules in encoder and decoder?
     ):
         super().__init__()
         self.out_channels = out_channels
@@ -151,7 +152,7 @@ class Block(torch.nn.Module):
         self.conv_skip = MPConv(in_channels, out_channels, kernel=[1,1]) if in_channels != out_channels else None
         self.attn_qkv = MPConv(out_channels, out_channels * 3, kernel=[1,1]) if self.num_heads != 0 else None
         self.attn_proj = MPConv(out_channels, out_channels, kernel=[1,1]) if self.num_heads != 0 else None
-        self.hignn = HIGnnInterface(gnn_metadata, out_channels) if gnn_metadata is not None and flavor == 'enc' else None
+        self.hignn = HIGnnInterface(gnn_metadata, out_channels) if gnn_metadata is not None and (not gnn_enc_only or flavor == 'enc') else None
 
     def forward(self, x, emb, graph = None):
         # Main branch.
