@@ -358,7 +358,8 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
         data['image_node'].pos = self.image_patch_positions
 
         # ---- Class
-        data['class_node'].x = torch.from_numpy(graphs['class_node']).to(torch.float32)
+        one_hots = torch.from_numpy(graphs['class_node']).to(torch.float32)
+        data['class_node'].x = self.clean_coco_one_hots(one_hots) # move 'unlabelled' to the end
         data['class_node'].pos = self.safe_key_pos_open(graphs, 'class_pos')
         data['class_node'].label = torch.argmax(data['class_node'].x, dim=1)
 
@@ -370,6 +371,12 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
 
         return data
     
+    def clean_coco_one_hots(self, one_hots, real_n_labels=183):
+        cleaned_one_hots = torch.zeros((one_hots.shape[0], real_n_labels), dtype=torch.float32)
+        cleaned_one_hots[:, :real_n_labels-2] = one_hots[:, :real_n_labels-2]
+        cleaned_one_hots[:, real_n_labels-1] = one_hots[:, 255] # move 'unlabelled' to the end
+        return cleaned_one_hots
+
     def safe_key_pos_open(self, graphs, key):
         class_pos = graphs.get(key, None)
         if class_pos is None or class_pos.size == 0 or class_pos.shape != (len(class_pos), 2):
