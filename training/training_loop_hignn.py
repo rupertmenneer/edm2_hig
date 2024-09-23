@@ -98,11 +98,8 @@ def training_loop(
     torch.backends.cudnn.benchmark = cudnn_benchmark
     torch.backends.cudnn.allow_tf32 = False
     torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
-    # Enable the W&B service mode
+    torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False    
     
-    
-
     # Get current date and time
     now = datetime.now()
     formatted_date_time = now.strftime("%b_%d_hr_%H")
