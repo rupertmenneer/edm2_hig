@@ -70,9 +70,10 @@ class HIGnnInterface(torch.nn.Module):
             graph[key].x = emb
         return graph
     
-    def apply_one_mp_scaling(self, graph, one_hot_labels=['class_node']):
+    def apply_mp_scaling(self, graph, one_hot_labels=['class_node']):
         for key in one_hot_labels:
-            graph[key].x = graph[key].x * np.sqrt(graph[key].x.shape[1]) # MP scaling for one hot cond nodes
+            # graph[key].x = graph[key].x * np.sqrt(graph[key].x.shape[1]) # MP scaling for one hot cond nodes
+            graph[key].x = normalize(graph[key].x, dim=1) # apply normalisation to class nodes at start of network
         return graph
 
     def forward(self, x, graph):
@@ -80,7 +81,7 @@ class HIGnnInterface(torch.nn.Module):
         assert x.shape[0] == graph.image.shape[0], "Batch size mismatch between input and graph"
 
         graph = self.update_graph_image_nodes(x, graph) # update and resize image nodes on graph with current feature map
-        graph = self.apply_one_mp_scaling(graph) # apply MP scaling to one hot encoded nodes
+        graph = self.apply_mp_scaling(graph) # apply MP scaling to one hot encoded nodes
 
         y = self.gnn(graph.x_dict, graph.edge_index_dict, graph.edge_attr_dict) # pass dual graph through GNN
 
