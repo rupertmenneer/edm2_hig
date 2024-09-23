@@ -66,7 +66,7 @@ def learning_rate_schedule(cur_nimg, batch_size, ref_lr=100e-4, ref_batches=70e3
 def training_loop(
     dataset_kwargs      = dict(class_name='hig_data.coco.CocoStuffGraphDataset',),
     encoder_kwargs      = dict(class_name='training.encoders.StabilityVAEEncoder'),
-    data_loader_kwargs  = dict(class_name='torch_geometric.loader.DataLoader', pin_memory=True, num_workers=16, prefetch_factor=8),
+    data_loader_kwargs  = dict(class_name='torch_geometric.loader.DataLoader', pin_memory=True, num_workers=4, prefetch_factor=4),
     network_kwargs      = dict(class_name='training.networks_edm2_hignn.Precond'),
     loss_kwargs         = dict(class_name='training.training_loop_hignn.EDM2Loss'),
     optimizer_kwargs    = dict(class_name='torch.optim.Adam', betas=(0.9, 0.99)),
@@ -181,10 +181,10 @@ def training_loop(
     stats_jsonl = None
 
     # create fixed logging batch
-    logging_iter = iter(dnnlib.util.construct_class_by_name(dataset=dataset_obj, sampler=dataset_sampler, batch_size=8, **data_loader_kwargs))
-    logging_iter_val = iter(dnnlib.util.construct_class_by_name(dataset=val_dataset_obj, sampler=dataset_sampler, batch_size=8, **data_loader_kwargs))
-    logging_batch = next(logging_iter).clone().detach()
-    logging_batch_val = next(logging_iter_val).clone().detach()
+    if dist.get_rank() == 0:
+        logging_batch = get_single_batch(dataset_obj, class_name=data_loader_kwargs['class_name'])
+        logging_batch_val = get_single_batch(val_dataset_obj, class_name=data_loader_kwargs['class_name'])
+
     while True:
         done = (state.cur_nimg >= stop_at_nimg)
 
@@ -234,12 +234,12 @@ def training_loop(
             # wandb logging rank 0 only
             with torch.no_grad():
                 # sample images from training and validation
-                for batch in [logging_batch, logging_batch_val]:
+                for name, batch in zip(['Train', 'Validation'], [logging_batch, logging_batch_val]):
                     
-                    dist.print0(f"Sampling with image shape {noise.shape}")
                     # Samples
                     graph = copy.deepcopy(batch) # ensure deepcopy of logging batch each call
                     noise = torch.randn((graph.image.shape[0], net.img_channels, net.img_resolution, net.img_resolution), device=device)
+                    dist.print0(f"{name} Sampling with image shape {noise.shape}")
                     sampled = edm_sampler(net=ddp, gnet=ddp, noise=noise, graph=graph) # sample images from noise and graph batch
 
                     # Create HIGNN embedding for logging
@@ -248,7 +248,7 @@ def training_loop(
                     init_gnn_emb = np.clip(init_gnn_emb[:, :3].cpu().detach().numpy().transpose(0,2,3,1), 0, 1) # clip for vis
                     
                     dist.print0(f"Logging samples to wandb..")
-                    logging_generate_sample_vis(graph, sampled, init_gnn_emb) # log images to wandb
+                    logging_generate_sample_vis(graph, sampled, init_gnn_emb, title=name) # log images to wandb
                     dist.print0(f"Finished.")
 
         # Save network snapshot.
@@ -281,9 +281,9 @@ def training_loop(
         for round_idx in range(num_accumulation_rounds):
             with misc.ddp_sync(ddp, (round_idx == num_accumulation_rounds - 1)):
                 graph_batch = next(dataset_iterator).to(device)
-                graph_batch.image_latents = encoder.encode_latents(graph_batch.image.to(device))
+                image_latents = encoder.encode_latents(graph_batch.image.to(device))
                 graph_batch = graph_batch if cfg_dropout != 0.0 and np.random.rand() < cfg_dropout else None
-                loss = loss_fn(net=ddp, images = graph.image_latents, graph=graph_batch,)
+                loss = loss_fn(net=ddp, images = image_latents, graph=graph_batch,)
                 training_stats.report('Loss/loss', loss)
                 if dist.get_rank() == 0 and wandb.run is not None:
                         wandb.log({"train/loss": torch.mean(loss).detach(), "nimg": state.cur_nimg})
@@ -310,3 +310,9 @@ def training_loop(
         cumulative_training_time += time.time() - batch_start_time
 
 #----------------------------------------------------------------------------
+
+def get_single_batch(dataset, class_name, n=8):
+    # create dl, get single batch, detach and return
+    data_loader = iter(dnnlib.util.construct_class_by_name(class_name=class_name, dataset=dataset, batch_size=n, pin_memory=True, num_workers=1, prefetch_factor=1))
+    batch = next(iter(data_loader)).clone().detach()
+    return batch
