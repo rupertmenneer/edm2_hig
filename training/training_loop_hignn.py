@@ -282,7 +282,7 @@ def training_loop(
             with misc.ddp_sync(ddp, (round_idx == num_accumulation_rounds - 1)):
                 graph_batch = next(dataset_iterator).to(device)
                 image_latents = encoder.encode_latents(graph_batch.image.to(device))
-                graph_batch = graph_batch if cfg_dropout != 0.0 and np.random.rand() < cfg_dropout else None
+                graph_batch = None if cfg_dropout != 0.0 and np.random.rand() < cfg_dropout else graph_batch
                 loss = loss_fn(net=ddp, images = image_latents, graph=graph_batch,)
                 training_stats.report('Loss/loss', loss)
                 if dist.get_rank() == 0 and wandb.run is not None:
