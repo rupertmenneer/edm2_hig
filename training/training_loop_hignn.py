@@ -175,6 +175,7 @@ def training_loop(
     # Main training loop.
     dataset_sampler = misc.InfiniteSampler(dataset=dataset_obj, rank=dist.get_rank(), num_replicas=dist.get_world_size(), seed=seed, start_idx=state.cur_nimg)
     dataset_iterator = iter(dnnlib.util.construct_class_by_name(dataset=dataset_obj, sampler=dataset_sampler, batch_size=batch_gpu, **data_loader_kwargs))
+    val_dataloader = dnnlib.util.construct_class_by_name(dataset=val_dataset_obj, batch_size=batch_gpu, **data_loader_kwargs)
     prev_status_nimg = state.cur_nimg
     cumulative_training_time = 0
     start_nimg = state.cur_nimg
@@ -250,6 +251,14 @@ def training_loop(
                     dist.print0(f"Logging samples to wandb..")
                     logging_generate_sample_vis(graph, sampled, init_gnn_emb, title=name) # log images to wandb
                     dist.print0(f"Finished.")
+
+            # Do validation epoch - log to wandb
+            for batch in val_dataloader:
+                graph_batch = batch.to(device)
+                image_latents = encoder.encode_latents(graph_batch.image.to(device))
+                loss = loss_fn(net=ddp, images = image_latents, graph=graph_batch,)
+                training_stats.report('Loss/val_loss', loss)
+                wandb.log({"val/loss": torch.mean(loss).detach(), "nimg": state.cur_nimg})
 
         # Save network snapshot.
         if snapshot_nimg is not None and state.cur_nimg % snapshot_nimg == 0 and (state.cur_nimg != start_nimg or start_nimg == 0) and dist.get_rank() == 0:
