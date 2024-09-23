@@ -44,9 +44,9 @@ class HIGnnInterface(torch.nn.Module):
         incoming_meta_paths_per_node = defaultdict(int, {node_type: 1/np.sqrt(sum(1 for _, _, dst in edge_types if dst == node_type)) for node_type in node_types})
 
         gnn = MP_GNN(gnn_channels, num_gnn_layers, incoming_meta_paths_per_node)
-        self.gnn = torch_geometric.nn.to_hetero(gnn, metadata, aggr="mean")
+        self.gnn = torch_geometric.nn.to_hetero(gnn, metadata, aggr="sum")
 
-        self.out_gain = torch.nn.Parameter(torch.zeros([]))
+        self.out_gain = torch.nn.Parameter(torch.ones([]))
 
         
     def update_graph_image_nodes(self, x, graph):
@@ -69,12 +69,19 @@ class HIGnnInterface(torch.nn.Module):
         for key, emb in x.items():
             graph[key].x = emb
         return graph
+    
+    def apply_one_mp_scaling(self, graph, one_hot_labels=['class_node']):
+        for key in one_hot_labels:
+            graph[key].x = graph[key].x * np.sqrt(graph[key].x.shape[1]) # MP scaling for one hot cond nodes
+        return graph
 
     def forward(self, x, graph):
 
         assert x.shape[0] == graph.image.shape[0], "Batch size mismatch between input and graph"
 
         graph = self.update_graph_image_nodes(x, graph) # update and resize image nodes on graph with current feature map
+        graph = self.apply_one_mp_scaling(graph) # apply MP scaling to one hot encoded nodes
+
         y = self.gnn(graph.x_dict, graph.edge_index_dict, graph.edge_attr_dict) # pass dual graph through GNN
 
         graph = self.update_graph_embeddings(y, graph) # update graph with new embeddings
@@ -96,6 +103,7 @@ class MP_GNN(torch.nn.Module):
         super().__init__()
         self.mp_meta_path_factors = mp_meta_path_factors
         self.gnn_layers = torch.nn.ModuleList()
+        self.gnn_layers.append(MP_GeoLinear(-1, hidden_channels)) # input proj
         for _ in range(num_gnn_layers):
             self.gnn_layers.append(MP_HIPGnnConv((-1,-1), hidden_channels)) # gnn layers
 
@@ -190,6 +198,7 @@ class MP_HIPGnnConv(torch_geometric.nn.MessagePassing):
         if isinstance(x, torch.Tensor):
             x = (x, x) # split into two branches
 
+
         out = self.propagate(edge_index, x=x, edge_attr=edge_attr, size=size) # propagate (with MP-cat if edge attribute exists)
         out = self.lin_l(out) # left weight matrix
 
@@ -197,6 +206,7 @@ class MP_HIPGnnConv(torch_geometric.nn.MessagePassing):
         if x_r is not None:
             out_r = self.lin_r(x_r).to(x[0].dtype) # right weight matrix
             out = mp_sum(out.to(x[0].dtype), out_r) # apply right weight matrix and MP sum to connect branches
+
 
         return out
 
