@@ -276,6 +276,9 @@ class UNet(torch.nn.Module):
             emb = mp_sum(emb, self.emb_label(class_labels * np.sqrt(class_labels.shape[1])), t=self.label_balance)
         emb = mp_silu(emb)
 
+        if graph is not None: # MODIFICATION: scale cond nodes if present
+            graph = self.graph_proj(graph)
+
         # Encoder.
         x = torch.cat([x, torch.ones_like(x[:, :1])], dim=1)
         skips = []
@@ -292,6 +295,11 @@ class UNet(torch.nn.Module):
             x = block(x, emb)
         x = self.out_conv(x, gain=self.out_gain)
         return x
+
+    def graph_proj(self, graph, one_hot_labels=['class_node']):
+        for key in one_hot_labels:
+            graph[key].x = graph[key].x * np.sqrt(graph[key].x.shape[1]) # MP scaling and proj for cond node 
+        return graph
 
 
 #----------------------------------------------------------------------------
