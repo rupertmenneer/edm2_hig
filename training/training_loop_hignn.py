@@ -14,6 +14,8 @@ import pickle
 import psutil
 import numpy as np
 import torch
+import torch.distributed
+import torch.distributed
 import dnnlib
 from torch_utils import distributed as dist
 from torch_utils import training_stats
@@ -90,7 +92,7 @@ def training_loop(
     preset_name          = None,     # Name of the preset for logging.
 
     device              = torch.device('cuda'),
-    cfg_dropout         = 0.0,
+    cfg_dropout         = 0.2,
 ):
     # Initialize.
     prev_status_time = time.time()
@@ -172,7 +174,8 @@ def training_loop(
     # Main training loop.
     dataset_sampler = misc.InfiniteSampler(dataset=dataset_obj, rank=dist.get_rank(), num_replicas=dist.get_world_size(), seed=seed, start_idx=state.cur_nimg)
     dataset_iterator = iter(dnnlib.util.construct_class_by_name(dataset=dataset_obj, sampler=dataset_sampler, batch_size=batch_gpu, **data_loader_kwargs))
-    val_dataloader = dnnlib.util.construct_class_by_name(dataset=val_dataset_obj, batch_size=batch_gpu, **data_loader_kwargs)
+    val_sampler = torch.utils.data.DistributedSampler(dataset=val_dataset_obj, rank=dist.get_rank(), num_replicas=dist.get_world_size(), seed=seed, shuffle=False,) # use standard sampler for val
+    val_dataloader = dnnlib.util.construct_class_by_name(dataset=val_dataset_obj, sampler=val_sampler, batch_size=batch_gpu, **data_loader_kwargs, drop_last=True,) # set drop last true
     prev_status_nimg = state.cur_nimg
     cumulative_training_time = 0
     start_nimg = state.cur_nimg
@@ -207,7 +210,6 @@ def training_loop(
             prev_status_time = cur_time
             torch.cuda.reset_peak_memory_stats()
 
-
             # Flush training stats.
             training_stats.default_collector.update()
             if dist.get_rank() == 0:
@@ -219,7 +221,6 @@ def training_loop(
                 stats_jsonl.write('{' + ', '.join(items) + '}\n')
                 stats_jsonl.flush()
 
-
             # Update progress and check for abort.
             dist.update_progress(state.cur_nimg // 1000, stop_at_nimg // 1000)
             if state.cur_nimg == stop_at_nimg and state.cur_nimg < total_nimg:
@@ -227,8 +228,30 @@ def training_loop(
             if dist.should_stop() or dist.should_suspend():
                 done = True
 
-        # Save wandb vis
+        # Save validation stats vis
         if wandb.run is not None and wandb_nimg is not None and (done or state.cur_nimg % wandb_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0):
+            dist.print0(f"Starting validation epoch")
+            with torch.no_grad():
+                # Do validation epoch - log to wandb
+                val_losses = []
+                for batch in val_dataloader:
+                    graph_batch = batch.to(device)
+                    image_latents = encoder.encode_latents(graph_batch.image.to(device))
+                    dist.print0(f"validation batch -> ", image_latents.shape)
+                    loss = loss_fn(net=ddp, images = image_latents, graph=graph_batch,)
+                    val_losses.append(torch.mean(loss).detach().cpu().numpy())
+
+                val_loss_tensor = torch.tensor(np.mean(val_losses), device=device)
+                if dist.get_rank() == 0:
+                    wandb.log({"val/loss": val_loss_tensor.item(), "nimg": state.cur_nimg})
+
+                cur_time = time.time()
+                state.total_elapsed_time += cur_time - prev_status_time
+                dist.print0('Finished val, time:', f"{dnnlib.util.format_time(training_stats.report0('Timing/total_sec',  state.total_elapsed_time)):<12s}")
+
+        # Save wandb vis
+        if wandb.run is not None and wandb_nimg is not None and (done or state.cur_nimg % wandb_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0) and dist.get_rank() == 0:
+
             # wandb logging rank 0 only
             with torch.no_grad():
                 # sample images from training and validation
@@ -247,15 +270,11 @@ def training_loop(
                     
                     dist.print0(f"Logging samples to wandb..")
                     logging_generate_sample_vis(graph, sampled, init_gnn_emb, title=name) # log images to wandb
-                    dist.print0(f"Finished.")
 
-            # Do validation epoch - log to wandb
-            for batch in val_dataloader:
-                graph_batch = batch.to(device)
-                image_latents = encoder.encode_latents(graph_batch.image.to(device))
-                loss = loss_fn(net=ddp, images = image_latents, graph=graph_batch,)
-                training_stats.report('Loss/val_loss', loss)
-                wandb.log({"val/loss": torch.mean(loss).detach(), "nimg": state.cur_nimg})
+                cur_time = time.time()
+                state.total_elapsed_time += cur_time - prev_status_time
+                dist.print0('Finished wandb, time:', f"{dnnlib.util.format_time(training_stats.report0('Timing/total_sec',  state.total_elapsed_time)):<12s}")
+
 
         # Save network snapshot.
         if snapshot_nimg is not None and state.cur_nimg % snapshot_nimg == 0 and (state.cur_nimg != start_nimg or start_nimg == 0) and dist.get_rank() == 0:

@@ -367,7 +367,7 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
         data['class_node', 'class_edge', 'class_node'].edge_index = torch.from_numpy(graphs['class_edge']).to(torch.long) if graphs['class_edge'].shape[1] != 0 else torch.empty((2, 0), dtype=torch.long)
         data['class_node', 'class_to_image', 'image_node'].edge_index = torch.from_numpy(graphs['class_to_image']).to(torch.long) if graphs['class_to_image'].shape[1] != 0 else torch.empty((2, 0), dtype=torch.long)
         # add reverse image edge
-        # data['image_node', 'image_to_class', 'class_node'].edge_index = torch.flip(data['class_node', 'class_to_image', 'image_node'].edge_index, [0])
+        data['image_node', 'image_to_class', 'class_node'].edge_index = torch.flip(data['class_node', 'class_to_image', 'image_node'].edge_index, [0])
 
         return data
     

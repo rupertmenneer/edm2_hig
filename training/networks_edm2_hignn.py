@@ -132,7 +132,7 @@ class Block(torch.nn.Module):
         graph_balance       = 0.5,      # Balance between residual branch (0) and HIG Graph Neural Network (1).
         clip_act            = 256,      # Clip output activations. None = do not clip.
         gnn_metadata        = None,     # MODIFICATION: use dual_gnn for conditioning, if not None must supply gnn meta data for lazy initialisation
-        gnn_enc_only        = False,    # MODIFICATION: use HIGnn modules in encoder and decoder?
+        gnn_enc_only        = True,    # MODIFICATION: use HIGnn modules in encoder and decoder?
     ):
         super().__init__()
         self.out_channels = out_channels
