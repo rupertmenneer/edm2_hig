@@ -160,3 +160,70 @@ def load_stability_vae(vae_name='stabilityai/sdxl-vae', device=torch.device('cpu
     return vae.eval().requires_grad_(False).to(device)
 
 #----------------------------------------------------------------------------
+
+# CLIP encoder to retreive text for text captions/class labels/attributes etc.
+
+@persistence.persistent_class
+class CLIPEncoder(Encoder):
+    def __init__(self,
+        name        = 'openai/clip-vit-large-patch14',        # Name of the VAE to use.
+        raw_mean    = [6.56,  1.10,  0.10, -0.31],            # Assumed mean of the raw latents.
+        raw_std     = [5.315, 4.646, 5.719, 4.495],           # Assumed standasrd deviation of the raw latents.
+        final_mean  = 0,                                      # Desired mean of the final latents.
+        final_std   = 0.5,                                    # Desired standard deviation of the final latents.
+        batch_size  = 8,                                      # Batch size to use when running the VAE.
+    ):
+        super().__init__()
+        self.name = name
+        self.scale = np.float32(final_std) / np.float32(raw_std)
+        self.bias = np.float32(final_mean) - np.float32(raw_mean) * self.scale
+        self.batch_size = int(batch_size)
+        self._clip = None
+        self._processor = None
+
+    def init(self, device): # force lazy init to happen now
+        super().init(device)
+        if self._clip is None:
+            self._clip, self._processor = load_clip(self.name, device=device)
+        else:
+            self._clip.to(device)
+
+    def __getstate__(self):
+        return dict(super().__getstate__(), _clip=None, _processor=None) # do not pickle the vae
+
+    def _run_clip_encoder(self, inputs):
+        latents = self._clip.get_text_features(**inputs)
+        return latents # return avg text embedding per input
+
+    def encode_raw_text(self, text, device=None): # list of raw text => raw latents
+        self.init(device)
+        inputs = self._processor(text=text, return_tensors="pt")
+        inputs = {key: value.to(device) for key, value in inputs.items()} # cast inputs to device
+        return self._run_clip_encoder(inputs)
+
+    def encode_latents(self, x): # raw latents => final latents
+        x = x.to(torch.float32)
+        x = x * misc.const_like(x, self.scale).reshape(1, -1, 1, 1)
+        x = x + misc.const_like(x, self.bias).reshape(1, -1, 1, 1)
+        return x
+    
+#----------------------------------------------------------------------------
+
+def load_clip(name='openai/clip-vit-large-patch14', device=torch.device('cpu')):
+    import dnnlib
+    cache_dir = dnnlib.make_cache_dir_path('transformers')
+    os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
+    os.environ['HF_HUB_DISABLE_PROGRESS_BARS'] = '1'
+    os.environ['HF_HOME'] = cache_dir
+
+    import transformers # pip install diffusers # pyright: ignore [reportMissingImports]
+    try:
+        # First try with local_files_only to avoid consulting tfhub metadata if the model is already in cache.
+        clip = transformers.CLIPModel.from_pretrained(name, cache_dir=cache_dir, local_files_only=True)
+        processor = transformers.CLIPProcessor.from_pretrained(name, cache_dir=cache_dir, local_files_only=True)
+    except:
+        # Could not load the model from cache; try without local_files_only.
+        clip = transformers.CLIPModel.from_pretrained(name, cache_dir=cache_dir,)
+        processor = transformers.CLIPProcessor.from_pretrained(name, cache_dir=cache_dir,)
+
+    return clip.eval().requires_grad_(False).to(device), processor

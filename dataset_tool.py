@@ -23,7 +23,7 @@ import PIL.Image
 import torch
 from tqdm import tqdm
 
-from training.encoders import StabilityVAEEncoder
+from training.encoders import StabilityVAEEncoder, CLIPEncoder
 
 #----------------------------------------------------------------------------
 
@@ -31,6 +31,7 @@ from training.encoders import StabilityVAEEncoder
 class ImageEntry:
     img: np.ndarray
     label: Optional[int]
+    fname: Optional[str]
 
 #----------------------------------------------------------------------------
 # Parse a 'M,N' or 'MxN' integer tuple.
@@ -96,7 +97,7 @@ def open_image_folder(source_dir, *, max_images: Optional[int]) -> tuple[int, It
     def iterate_images():
         for idx, fname in enumerate(input_images):
             img = np.array(PIL.Image.open(fname).convert('RGB'))
-            yield ImageEntry(img=img, label=labels.get(arch_fnames[fname]))
+            yield ImageEntry(img=img, label=labels.get(arch_fnames[fname]), fname=fname)
             if idx >= max_idx - 1:
                 break
     return max_idx, iterate_images()
@@ -121,10 +122,16 @@ def open_image_zip(source, *, max_images: Optional[int]) -> tuple[int, Iterator[
             for idx, fname in enumerate(input_images):
                 with z.open(fname, 'r') as file:
                     img = np.array(PIL.Image.open(file).convert('RGB'))
-                yield ImageEntry(img=img, label=labels.get(fname))
+                yield ImageEntry(img=img, label=labels.get(fname), fname=fname)
                 if idx >= max_idx - 1:
                     break
     return max_idx, iterate_images()
+
+def open_json(source):
+    data = dict()
+    with open(source) as f:
+        data  = json.load(f)
+    return data
 
 #----------------------------------------------------------------------------
 
@@ -223,7 +230,7 @@ def make_transform(
         if output_width != output_height:
             raise click.ClickException('width and height must match in --resolution=WxH when using ' + transform + ' transform')
         return functools.partial(center_crop_imagenet, output_width)
-    if transform == 'nearest-crop':
+    if transform == 'nearest-crop': 
         if output_width is None or output_height is None:
             raise click.ClickException('must specify --resolution=WxH when using ' + transform + ' transform')
         if output_width != output_height:
@@ -239,6 +246,8 @@ def open_dataset(source, *, max_images: Optional[int]):
     elif os.path.isfile(source):
         if file_ext(source) == 'zip':
             return open_image_zip(source, max_images=max_images)
+        if file_ext(source) == 'json':
+            return open_json(source,)
         else:
             raise click.ClickException(f'Only zip archives are supported: {source}')
     else:
@@ -293,6 +302,7 @@ def cmdline():
 @click.option('--transform',  help='Input crop/resize mode', metavar='MODE',            type=click.Choice(['center-crop', 'center-crop-wide', 'center-crop-dhariwal', 'nearest-crop']))
 @click.option('--resolution', help='Output resolution (e.g., 512x512)', metavar='WxH',  type=parse_tuple)
 
+# MODIFIED - Now supports instance bounding box jsons, and captions
 def convert(
     source: str,
     dest: str,
@@ -365,8 +375,9 @@ def convert(
 
     labels = []
     for idx, image in tqdm(enumerate(input_iter), total=num_files):
-        idx_str = f'{idx:08d}'
-        archive_fname = f'{idx_str[:5]}/img{idx_str}.png'
+        # idx_str = f'{idx:08d}'
+        # archive_fname = f'{idx_str[:5]}/img{idx_str}.png'
+        archive_fname = f'{os.path.splitext(os.path.basename(image.fname))[0]}.png'
 
         # Apply crop and resize.
         img = transform_image(image.img)
@@ -427,8 +438,9 @@ def encode(
     for idx, image in tqdm(enumerate(input_iter), total=num_files):
         img_tensor = torch.tensor(image.img).to('cuda').permute(2, 0, 1).unsqueeze(0)
         mean_std = vae.encode_pixels(img_tensor)[0].cpu()
-        idx_str = f'{idx:08d}'
-        archive_fname = f'{idx_str[:5]}/img-mean-std-{idx_str}.npy'
+        # idx_str = f'{idx:08d}'
+        # archive_fname = f'{idx_str[:5]}/img-mean-std-{idx_str}.npy'
+        archive_fname = f'{os.path.splitext(os.path.basename(image.fname))[0]}.npy'
 
         f = io.BytesIO()
         np.save(f, mean_std)
@@ -437,6 +449,41 @@ def encode(
 
     metadata = {'labels': labels if all(x is not None for x in labels) else None}
     save_bytes(os.path.join(archive_root_dir, 'dataset.json'), json.dumps(metadata))
+    close_dest()
+
+#----------------------------------------------------------------------------
+
+@cmdline.command()
+@click.option('--model-url',  help='Text encoder model', metavar='URL', type=str, default='openai/clip-vit-large-patch14', show_default=True)
+@click.option('--source',     help='Input json file', metavar='PATH',   type=str, required=True)
+@click.option('--dest',       help='Output directory or archive name', metavar='PATH',  type=str, required=True)
+@click.option('--key',       help='Output directory or archive name', metavar='PATH',  type=str, required=False, default='caption',)
+
+def textencode(
+    model_url: str,
+    source: str,
+    dest: str,
+    key: str = 'caption',
+
+):
+    """Encode pixel data to VAE latents."""
+    if dest == '':
+        raise click.ClickException('--dest output filename or directory must not be an empty string')
+
+    clip = CLIPEncoder(name=model_url, batch_size=1)
+    text_data = open_dataset(source, max_images=None)
+    archive_root_dir, save_bytes, close_dest = open_dest(dest)
+
+    for idx, data in tqdm(text_data.items(), total=len(text_data)):
+
+        text_data = data[key]
+        text_latents = clip.encode_raw_text(text_data, device='cuda')[0].cpu()
+
+        archive_fname = f'{os.path.splitext(os.path.basename(idx))[0]}.npy'
+        f = io.BytesIO()
+        np.save(f, text_latents)
+        save_bytes(os.path.join(archive_root_dir, archive_fname), f.getvalue())
+
     close_dest()
 
 #----------------------------------------------------------------------------
