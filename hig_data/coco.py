@@ -26,14 +26,18 @@ class CocoStuffGraphDataset(Dataset):
         image_path,                   # Path to zip for images.
         mask_path,                    # Path to zip for semantic masks.
         labels_path,                  # Path to json for bounding boxes.
+        captions_path,                # Path to json for caption latents.
+        vocab_path,                   # Path to json for vocab latents.
         latent_compression = 8,       # Compression factor for latent images.
-        resolution = 32,             # Ensure specific resolution, None = anything goes.
+        resolution = 32,              # Ensure specific resolution, None = anything goes.
         **kwargs,                     # Additional arguments for the GeoDataset base class.
     ) -> None:
 
         self._image_path = image_path
         self._mask_path = mask_path
         self._labels_path = labels_path
+        self._captions_path = captions_path
+        self._vocab_path = vocab_path 
         
         self.file_names = self.get_filelist_from_paths()
         self.latent_compression = latent_compression
@@ -57,25 +61,33 @@ class CocoStuffGraphDataset(Dataset):
         assert self._file_ext(self._mask_path) == '.zip', 'Mask path must point to a zip'
         assert self._file_ext(self._labels_path) == '.json', 'Label path must point to a json'
 
-        supported_ext = PIL.Image.EXTENSION.keys() | {'.npy', '.json'}
+        supported_ext = PIL.Image.EXTENSION.keys() | {'.npy'}
         unspported_prefix = ['.', '__', '__MACOSX/']
         self._files = {}  # Store file references
+        primary_list = sorted(fname for fname in set(self._get_zipfile(self._image_path).namelist()) if self._file_ext(fname) in supported_ext and not any(fname.startswith(prefix) for prefix in unspported_prefix))
+        primary_set = set([os.path.splitext(os.path.basename(f))[0] for f in primary_list])
         self._all_fnames = {
-            'image': sorted(fname for fname in set(self._get_zipfile(self._image_path).namelist()) if self._file_ext(fname) in supported_ext and not any(fname.startswith(prefix) for prefix in unspported_prefix)),
-            'mask': sorted(fname for fname in set(self._get_zipfile(self._mask_path).namelist()) if self._file_ext(fname) in supported_ext and not any(fname.startswith(prefix) for prefix in unspported_prefix)),
-            'label': sorted(set(self._get_jsonfile().keys())),
+            'image': primary_list,
+            'mask': sorted(f for f in set(self._get_zipfile(self._mask_path).namelist()) if self._file_name(f) in primary_set and self._file_ext(f) in supported_ext and not any(f.startswith(prefix) for prefix in unspported_prefix)),
+            'label': sorted(f for f in set(self._get_jsonfile(self._labels_path).keys()) if os.path.splitext(os.path.basename(f))[0] in primary_set),
+            'caption': sorted(f for f in set(self._get_zipfile(self._captions_path).namelist()) if self._file_name(f) in primary_set and self._file_ext(f) in supported_ext and not any(f.startswith(prefix) for prefix in unspported_prefix)),
+            'vocab': sorted(set(self._get_jsonfile(self._vocab_path).keys())),
         }
+        
+
+    def _file_name(self, fname):
+        return os.path.splitext(os.path.basename(fname))[0]
 
     def _get_zipfile(self, path):
         if path not in self._files:
             self._files[path] = zipfile.ZipFile(path)
         return self._files[path]
 
-    def _get_jsonfile(self,):
-        if self._labels_path not in self._files:
-            with open(self._labels_path, 'r') as f:
-                self._files[self._labels_path] = json.load(f) 
-        return self._files[self._labels_path]
+    def _get_jsonfile(self, path):
+        if path not in self._files:
+            with open(path, 'r') as f:
+                self._files[path] = json.load(f) 
+        return self._files[path]
     
 
     def _open_file(self, fname, path):
@@ -114,11 +126,22 @@ class CocoStuffGraphDataset(Dataset):
             mask = mask[:, :, ::-1]
         return image.copy(), mask.copy()
     
+    def _get_class_latent(self, class_idx):
+        label = self._get_jsonfile(self._vocab_path).get(str(class_idx+1))
+        return label
+    
     def _load_label(self, idx):
         raw_idx = self._raw_idx[idx]
         f_key = self._all_fnames['label'][raw_idx]
-        label = self._get_jsonfile()[f_key]
+        label = self._get_jsonfile(self._labels_path)[f_key]
         return label
+    
+    def _load_caption(self, idx):
+        raw_idx = self._raw_idx[idx]
+        fname = self._all_fnames['caption'][raw_idx]
+        with self._open_file(fname, self._captions_path) as f:
+            caption = np.load(f)
+        return caption
 
     # construct a hig from raw data item 
     def __getitem__(self, idx: int) -> HeteroData:
@@ -126,9 +149,11 @@ class CocoStuffGraphDataset(Dataset):
         data = RelaxedHeteroData() # create hetero data object for hig
         img, mask = self._load_images(idx)
         label = self._load_label(idx)
+        caption = self._load_caption(idx)
 
         data.image = torch.from_numpy(img[np.newaxis,...]).to(torch.float32) # add image to data object
         data.mask = torch.from_numpy(mask[np.newaxis,...]).to(torch.int64) # add mask to data object
+        data.caption = torch.from_numpy(caption[np.newaxis,...]).to(torch.float32) # add caption to data object
 
         # image and mask must have same resolution unless latent images enabled
         if not self.latent_compression != 1 and data.image.shape[-1] != data.mask.shape[-1]:
@@ -148,7 +173,9 @@ class CocoStuffGraphDataset(Dataset):
     def _create_instance_nodes(self, data, label):
         
         class_labels = np.array([l-1 for l in label['obj_class'] if l != 183], dtype=np.int64) # exlcude other class
-        data['instance_node'].x = torch.from_numpy(class_labels).to(torch.float32)
+        class_latents = np.array([self._get_class_latent(l) for l in class_labels], dtype=np.float32)
+        data['instance_node'].x = torch.from_numpy(class_latents).to(torch.float32)
+        data['instance_node'].label = class_labels # add class labels for convenience
 
         edge_index = torch.combinations(torch.arange(len(class_labels)), with_replacement=False).t()
         edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1)
@@ -173,9 +200,9 @@ class CocoStuffGraphDataset(Dataset):
     
     def _create_class_nodes(self, data, mask):
         class_labels = np.array([l for l in np.unique(mask) if l != 255], dtype=np.int64) # Must add 1 to harmonize mask labels with COCOStuff labels, remove unlabeled
-
-        data['class_node'].x = torch.from_numpy(class_labels).to(torch.float32)
-        data['class_node'].label = class_labels # add class labels to onehots position 0 for convenience
+        class_latents = np.array([self._get_class_latent(l) for l in class_labels], dtype=np.float32)
+        data['class_node'].x = torch.from_numpy(class_latents).to(torch.float32)
+        data['class_node'].label = class_labels # add class labels for convenience
 
         # densely connect class nodes
         edge_index = torch.combinations(torch.arange(len(class_labels)), with_replacement=False).t()
