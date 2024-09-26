@@ -528,6 +528,8 @@ def graphencodecoco(
     dataset = CocoStuffGraphDataset(img_path, mask_path, labels_path=label_path, captions_path=caption_path, vocab_path=vocab_path, xflip=True)
     archive_root_dir, save_bytes, close_dest = open_dest(dest)
 
+    statistics = {k:0 for k in ['img_mean', 'img_std', 'cap_mean', 'cap_std']}
+
     for idx in range(len(dataset)):
         graph = dataset[idx]
 
@@ -552,21 +554,34 @@ def graphencodecoco(
         archive_fname = f'{out_fname}_graph'
         f = io.BytesIO()
         np.savez(f,
-                 instance_node=graph['instance_node'].x,
-                 instance_label=graph['instance_node'].label,
+                 instance_node=graph['instance_node'].x.numpy(),
+                 instance_label=graph['instance_node'].label.numpy(),
 
-                 class_node=graph['class_node'].x,
-                 class_pos=graph['class_node'].pos,
-                 class_label=graph['class_node'].label,
+                 class_node=graph['class_node'].x.numpy(),
+                 class_pos=graph['class_node'].pos.numpy(),
+                 class_label=graph['class_node'].label.numpy(),
 
-                 class_edge=graph['class_edge'].edge_index,
-                 class_to_image=graph['instance_edge'].edge_index,
-                 class_to_image=graph['class_to_image'].edge_index,
-                 class_to_image=graph['instance_to_image'].edge_index,
-                 caption=graph.caption,
+                 class_edge=graph['class_edge'].edge_index.numpy(),
+                 instance_edge=graph['instance_edge'].edge_index.numpy(),
+                 class_to_image=graph['class_to_image'].edge_index.numpy(),
+                 instance_to_image=graph['instance_to_image'].edge_index.numpy(),
+                 caption=graph.caption.numpy(),
                  )
         save_bytes(os.path.join(archive_root_dir, archive_fname), f.getvalue())
 
+        # Statistics
+        statistics['img_mean'] += graph.image.numpy().mean(axis=(-2,-1))
+        statistics['img_std'] += graph.image.numpy().std(axis=(-2,-1))
+        statistics['cap_mean'] += graph.caption.numpy().mean()
+        statistics['cap_std'] += graph.caption.numpy().std()
+
+    # Save statistics
+    statistics = {k:v/len(dataset) for k,v in statistics.items()}
+    archive_fname = 'statistics'
+    f = io.BytesIO()
+    np.savez(f, **statistics)
+    save_bytes(os.path.join(archive_root_dir, archive_fname), f.getvalue())
+    
     close_dest()
 
 #----------------------------------------------------------------------------
