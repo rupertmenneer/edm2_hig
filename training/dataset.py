@@ -74,6 +74,9 @@ class Dataset(torch.utils.data.Dataset):
 
     def _load_raw_labels(self): # to be overridden by subclass
         raise NotImplementedError
+    
+    def _open_file(self, fname, path): # to be overridden by subclass
+        raise NotImplementedError
 
     def __getstate__(self):
         return dict(self.__dict__, _raw_labels=None)
@@ -86,6 +89,20 @@ class Dataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return self._raw_idx.size
+    
+    def _load_image_from_path(self, fname, path): # return image from fname as np.ndarray
+        ext = self._file_ext(fname)
+        with self._open_file(fname, path) as f:
+            if ext == '.npy':
+                image = np.load(f)
+                image = image.reshape(-1, *image.shape[-2:])
+            elif ext == '.png' and pyspng is not None:
+                image = pyspng.load(f.read())
+                image = image.reshape(*image.shape[:2], -1).transpose(2, 0, 1)
+            else:
+                image = np.array(PIL.Image.open(f))
+                image = image.reshape(*image.shape[:2], -1).transpose(2, 0, 1)
+        return image
 
     def __getitem__(self, idx):
         raw_idx = self._raw_idx[idx]
@@ -115,6 +132,10 @@ class Dataset(torch.utils.data.Dataset):
         d.xflip = (int(self._xflip[idx]) != 0)
         d.raw_label = self._get_raw_labels()[d.raw_idx].copy()
         return d
+
+    @staticmethod
+    def _file_ext(fname):
+        return os.path.splitext(fname)[1].lower()
 
     @property
     def name(self):

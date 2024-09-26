@@ -1,12 +1,12 @@
 
 import os
 import zipfile
+import json
+
 import PIL
-import torchvision
 import torch
 import numpy as np
 from torch_geometric.data import HeteroData, Dataset as GeoDataset
-
 from training.dataset import Dataset
 
 try:
@@ -14,66 +14,72 @@ try:
 except ImportError:
     pyspng = None
 
+
 """
-Loads COCO dataset from HF.
+Models COCO with a HIG graph.
 """
 # RUPERT MENNEER (2024)
 #----------------------------------------------------------------------------
+class CocoStuffGraphDataset(Dataset):
 
-class COCOStuffDataset(Dataset):
-    
     def __init__(self,
-        image_path,                   # Path to directory or zip for images.
-        mask_path,                    # Path to directory or zip for semantic masks.
-        resolution = None,            # Ensure specific resolution, None = anything goes.
-        **super_kwargs,               # Additional arguments for the Dataset base class.
-        ):
+        image_path,                   # Path to zip for images.
+        mask_path,                    # Path to zip for semantic masks.
+        labels_path,                  # Path to json for bounding boxes.
+        latent_compression = 8,       # Compression factor for latent images.
+        resolution = 32,             # Ensure specific resolution, None = anything goes.
+        **kwargs,                     # Additional arguments for the GeoDataset base class.
+    ) -> None:
 
-        self._path = image_path
+        self._image_path = image_path
         self._mask_path = mask_path
-        self._zipfiles = {}  # Store zipfile references for images and masks
-        self._cached_images = dict() # {raw_idx: np.ndarray, ...}
-        self._cached_masks = dict() # {raw_idx: np.ndarray, ...}
+        self._labels_path = labels_path
+        
+        self.file_names = self.get_filelist_from_paths()
+        self.latent_compression = latent_compression
 
-        if self._file_ext(self._path) == '.zip':
-            self._type = 'zip'
-            self._all_fnames = {
-                'image': set(self._get_zipfile(image_path).namelist()),
-                'mask': set(self._get_zipfile(mask_path).namelist())
-            }
-        else:
-            raise IOError('Path must point to a zip')
-
-        PIL.Image.init()
-        supported_ext = PIL.Image.EXTENSION.keys() | {'.npy'}
-        unspported_prefix = ['.', '__', '__MACOSX/']
-        self._fnames = {
-            'image': sorted(fname for fname in self._all_fnames['image'] if self._file_ext(fname) in supported_ext and not any(fname.startswith(prefix) for prefix in unspported_prefix)),
-            'mask': sorted(fname for fname in self._all_fnames['mask'] if self._file_ext(fname) in supported_ext and not any(fname.startswith(prefix) for prefix in unspported_prefix)),
-        }
-        if len(self._fnames['image']) == 0:
-            raise IOError('No image files found in the specified path')
-
-        if len(self._fnames['image']) != len(self._fnames['mask']):
-            raise IOError('Different number of images and masks')
-
-        name = os.path.splitext(os.path.basename(self._path))[0]
-        raw_shape = [len(self._fnames['image'])] + list(self._load_attribute_image(0, path=self._path).shape)
+        # load shape
+        name = os.path.splitext(os.path.basename(self._image_path))[0]
+        raw_shape = [len(self._all_fnames['image'])] + list(self._load_attribute_image(0, path=self._image_path).shape)
         if resolution is not None and (raw_shape[2] != resolution or raw_shape[3] != resolution):
             raise IOError('Image files do not match the specified resolution')
-        super().__init__(name=name, raw_shape=raw_shape, **super_kwargs)
+        super().__init__(name=name, raw_shape=raw_shape, **kwargs) # Call Super class init
 
-    @staticmethod
-    def _file_ext(fname):
-        return os.path.splitext(fname)[1].lower()
+        # image node positions (same for every img)
+        self.grid_size = self._raw_shape[-1] # grid size for image patches 
+        self.num_image_nodes = self.grid_size * self.grid_size
+        self.image_patch_positions = get_image_patch_positions()
+            
+        
+    def get_filelist_from_paths(self,):
+        
+        assert self._file_ext(self._image_path) == '.zip', 'Image path must point to a zip'
+        assert self._file_ext(self._mask_path) == '.zip', 'Mask path must point to a zip'
+        assert self._file_ext(self._labels_path) == '.json', 'Label path must point to a json'
+
+        supported_ext = PIL.Image.EXTENSION.keys() | {'.npy', '.json'}
+        unspported_prefix = ['.', '__', '__MACOSX/']
+        self._files = {}  # Store file references
+        self._all_fnames = {
+            'image': sorted(fname for fname in set(self._get_zipfile(self._image_path).namelist()) if self._file_ext(fname) in supported_ext and not any(fname.startswith(prefix) for prefix in unspported_prefix)),
+            'mask': sorted(fname for fname in set(self._get_zipfile(self._mask_path).namelist()) if self._file_ext(fname) in supported_ext and not any(fname.startswith(prefix) for prefix in unspported_prefix)),
+            'label': sorted(set(self._get_jsonfile().keys())),
+        }
 
     def _get_zipfile(self, path):
-        if path not in self._zipfiles:
-            self._zipfiles[path] = zipfile.ZipFile(path)
-        return self._zipfiles[path]
+        if path not in self._files:
+            self._files[path] = zipfile.ZipFile(path)
+        return self._files[path]
+
+    def _get_jsonfile(self,):
+        if self._labels_path not in self._files:
+            with open(self._labels_path, 'r') as f:
+                self._files[self._labels_path] = json.load(f) 
+        return self._files[self._labels_path]
+    
 
     def _open_file(self, fname, path):
-        if self._type == 'zip':
+        if self._file_ext(path) == '.zip':
             return self._get_zipfile(path).open(fname, 'r')
         return None
 
@@ -86,40 +92,19 @@ class COCOStuffDataset(Dataset):
 
     def __getstate__(self):
         return dict(super().__getstate__(), _zipfile=None)
-
-    def _load_image_from_path(self, fname, path): # return image from fname as np.ndarray
-        ext = self._file_ext(fname)
-        with self._open_file(fname, path) as f:
-            if ext == '.npy':
-                image = np.load(f)
-                image = image.reshape(-1, *image.shape[-2:])
-            elif ext == '.png' and pyspng is not None:
-                image = pyspng.load(f.read())
-                image = image.reshape(*image.shape[:2], -1).transpose(2, 0, 1)
-            else:
-                image = np.array(PIL.Image.open(f))
-                image = image.reshape(*image.shape[:2], -1).transpose(2, 0, 1)
-        return image
-
+    
     def _load_attribute_image(self, raw_idx, attribute='image', path=None):
-        image_name = self._fnames[attribute][raw_idx]
+        image_name = self._all_fnames[attribute][raw_idx]
         image = self._load_image_from_path(image_name, path)
         if attribute == 'mask' and image.ndim == 3:
             image = image[0:1]  # Use only the first channel
         return image
             
-
-        # load the preprocessed image and mask from the coco dataset
-    def __getitem__(self, idx):
+    # load the preprocessed image and mask from the coco dataset
+    def _load_images(self, idx):
         raw_idx = self._raw_idx[idx]
-        image = self._cached_images.get(raw_idx, None)
-        mask = self._cached_masks.get(raw_idx, None)
-        if image is None:
-            image = self._load_attribute_image(raw_idx, attribute='image', path=self._path)
-            mask = self._load_attribute_image(raw_idx, attribute='mask', path=self._mask_path)
-            if self._cache:
-                self._cached_images[raw_idx] = image
-                self._cached_masks[raw_idx] = mask
+        image = self._load_attribute_image(raw_idx, attribute='image', path=self._image_path)
+        mask = self._load_attribute_image(raw_idx, attribute='mask', path=self._mask_path)
         assert isinstance(image, np.ndarray)
         assert isinstance(mask, np.ndarray)
         assert list(image.shape) == self._raw_shape[1:]
@@ -128,48 +113,19 @@ class COCOStuffDataset(Dataset):
             image = image[:, :, ::-1]
             mask = mask[:, :, ::-1]
         return image.copy(), mask.copy()
-
-
-#----------------------------------------------------------------------------
-
-"""
-Models data with a dual graph representation.
-"""
-# RUPERT MENNEER (2024)
-#----------------------------------------------------------------------------
-class CocoStuffGraphDataset(GeoDataset):
-
-    def __init__(self,
-        image_path,                   # Path to directory or zip for images.
-        mask_path,                    # Path to directory or zip for semantic masks.
-        graph_transform=None,         # Transform to apply to the graph.
-        n_labels = 256,               # Number of classes in the dataset.
-        latent_compression = 8,       # Compression factor for latent images.
-        **kwargs,                     # Additional arguments for the GeoDataset base class.
-    ) -> None:
-
-        super().__init__(None, graph_transform)
-        
-        self.dataset = COCOStuffDataset(image_path, mask_path)
-        self.n_labels = n_labels
-        self.latent_compression = latent_compression
-
-        # image node positions (same for every img)
-        self.grid_size = self.dataset._raw_shape[-1] # grid size for image patches 
-        self.num_image_nodes = self.grid_size * self.grid_size
-
-        self.image_patch_positions = get_image_patch_positions()
-            
-        
-
-    def __len__(self) -> int:
-        return len(self.dataset)
+    
+    def _load_label(self, idx):
+        raw_idx = self._raw_idx[idx]
+        f_key = self._all_fnames['label'][raw_idx]
+        label = self._get_jsonfile()[f_key]
+        return label
 
     # construct a hig from raw data item 
     def __getitem__(self, idx: int) -> HeteroData:
 
         data = RelaxedHeteroData() # create hetero data object for hig
-        img, mask = self.dataset[idx]
+        img, mask = self._load_images(idx)
+        label = self._load_label(idx)
 
         data.image = torch.from_numpy(img[np.newaxis,...]).to(torch.float32) # add image to data object
         data.mask = torch.from_numpy(mask[np.newaxis,...]).to(torch.int64) # add mask to data object
@@ -183,29 +139,51 @@ class CocoStuffGraphDataset(GeoDataset):
         data['image_node'].x = image_patch_placeholder
         data['image_node'].pos = self.image_patch_positions
 
-        # create class nodes from semantic segmentation map
+        # create class/instance nodes from semantic segmentation map/labels (bounding boxes)
         self._create_class_nodes(data, mask)
+        self._create_instance_nodes(data, label)
 
-        # create class to image edges from semantic segmentation map
-        self._create_class_to_image_edges(data, mask)
+        return data
+    
+    def _create_instance_nodes(self, data, label):
+        
+        class_labels = np.array([l-1 for l in label['obj_class'] if l != 183], dtype=np.int64) # exlcude other class
+        data['instance_node'].x = torch.from_numpy(class_labels).to(torch.float32)
 
-        if self.transform: # apply any additional transforms
-            data = self.transform(data)
+        edge_index = torch.combinations(torch.arange(len(class_labels)), with_replacement=False).t()
+        edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1)
+        data['instance_node', 'instance_edge', 'instance_node'].edge_index = edge_index
+
+        data = self._create_instance_to_image_edges(data, label)
+        return data
+    
+    def _create_instance_to_image_edges(self, data, label):
+        edges = []
+        bounding_boxes = [bb for i, bb in enumerate(label['obj_bbox']) if label['obj_class'][i] != 183] # exclude other class
+        for class_node_idx, bounding_box in enumerate(bounding_boxes):
+            # get bounding box coordinates
+            linear_image_idxs = bbox_to_linear_indices(bounding_box, image_size=(self.grid_size, self.grid_size))
+            node_id_repeated = np.full((len(linear_image_idxs),), class_node_idx, dtype=np.int64) # repeat class node idx for each patch
+            edge_index = np.stack([node_id_repeated, linear_image_idxs], axis=0)
+            edges.append(edge_index)
+        class_to_image_index = np.concatenate(edges, axis=1) if edges else np.zeros((2, 0), dtype=np.int64)
+        data['instance_node', 'instance_to_image', 'image_node'].edge_index = torch.from_numpy(class_to_image_index) # convert to torch
 
         return data
     
     def _create_class_nodes(self, data, mask):
-        class_labels = np.array([l for l in np.unique(mask)], dtype=np.int64)
-        onehots = np.zeros((len(class_labels), self.n_labels), dtype=np.float32)
-        onehots[np.arange(len(class_labels)), class_labels] = 1
+        class_labels = np.array([l for l in np.unique(mask) if l != 255], dtype=np.int64) # Must add 1 to harmonize mask labels with COCOStuff labels, remove unlabeled
 
-        data['class_node'].x = torch.from_numpy(onehots).to(torch.float32)
+        data['class_node'].x = torch.from_numpy(class_labels).to(torch.float32)
         data['class_node'].label = class_labels # add class labels to onehots position 0 for convenience
 
         # densely connect class nodes
         edge_index = torch.combinations(torch.arange(len(class_labels)), with_replacement=False).t()
         edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1)
         data['class_node', 'class_edge', 'class_node'].edge_index = edge_index
+
+        # create class to image edges from semantic segmentation map
+        data = self._create_class_to_image_edges(data, mask)
         return data
     
     def _create_class_to_image_edges(self, data, mask):
@@ -225,25 +203,6 @@ class CocoStuffGraphDataset(GeoDataset):
         data['class_node', 'class_to_image', 'image_node'].edge_index = torch.from_numpy(class_to_image_index) # convert to torch
         data['class_node'].pos = torch.stack(class_node_pos, dim=0) if class_node_pos else torch.empty((0, 2), dtype=torch.float32) # add class node positions for visualisation
         return data
-    
-    @property
-    def name(self):
-        return self.dataset._name
-
-    @property
-    def image_shape(self): # [CHW]
-        return list(self.dataset._raw_shape[1:])
-
-    @property
-    def num_channels(self):
-        assert len(self.dataset.image_shape) == 3 # CHW
-        return self.dataset.image_shape[0]
-
-    @property
-    def resolution(self):
-        assert len(self.dataset.image_shape) == 3 # CHW
-        assert self.dataset.image_shape[1] == self.dataset.image_shape[2]
-        return self.dataset.image_shape[1]
     
 
 # ----------------------------------------------------------------------------
@@ -437,3 +396,46 @@ def linear_to_avg_2d_idx(idx, img_width=32, patch_size=8):
     row = torch.mean((idx // img_width).float()) * patch_size
     col = torch.mean((idx % img_width).float()) * patch_size
     return torch.tensor([col, row])
+
+def linear_to_2d_idx(idx, img_width=32, patch_size=1):
+    row = (idx // img_width).float() * patch_size
+    col = (idx % img_width).float() * patch_size
+    return torch.stack([row, col]).long()
+
+def bbox_to_linear_indices(bbox, image_size):
+    """
+    Converts normalized bounding box coordinates to linear pixel indices within the image.
+
+    Parameters:
+    - bbox: list or tuple of normalized coordinates [xmin, ymin, xmax, ymax], values between 0 and 1.
+    - image_size: tuple (H, W), image height and width.
+
+    Returns:
+    - linear_indices: numpy array of linear indices of pixels within the bounding box.
+    """
+    xmin, ymin, xmax, ymax = bbox
+    H, W = image_size
+
+    # Convert normalized coordinates to pixel indices
+    xmin_pix = int(np.floor(xmin * W))
+    xmax_pix = int(np.ceil(xmax * W)) - 1
+    ymin_pix = int(np.floor(ymin * H))
+    ymax_pix = int(np.ceil(ymax * H)) - 1
+
+    # Ensure indices are within image bounds
+    xmin_pix = max(0, min(xmin_pix, W - 1))
+    xmax_pix = max(0, min(xmax_pix, W - 1))
+    ymin_pix = max(0, min(ymin_pix, H - 1))
+    ymax_pix = max(0, min(ymax_pix, H - 1))
+
+    # Generate grid of x and y indices
+    ys = np.arange(ymin_pix, ymax_pix + 1)
+    xs = np.arange(xmin_pix, xmax_pix + 1)
+    xs_grid, ys_grid = np.meshgrid(xs, ys)
+
+    # Flatten the grids and compute linear indices
+    x_indices = xs_grid.flatten()
+    y_indices = ys_grid.flatten()
+    linear_indices = y_indices * W + x_indices
+
+    return linear_indices
