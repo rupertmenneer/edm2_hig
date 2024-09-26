@@ -69,11 +69,13 @@ class CocoStuffGraphDataset(Dataset):
         print('Found {} complete datapoint in {}'.format(len(primary_set), self._image_path))
         self._all_fnames = {
             'image': primary_list,
-            'mask': sorted(f for f in set(self._get_zipfile(self._mask_path).namelist()) if self._file_name(f) in primary_set and self._file_ext(f) in supported_ext and not any(f.startswith(prefix) for prefix in unspported_prefix)),
+            'mask': sorted(f for f in set(self._get_zipfile(self._mask_path).namelist()) if self._file_name(f) in primary_set),
             'label': sorted(f for f in set(self._get_jsonfile(self._labels_path).keys()) if os.path.splitext(os.path.basename(f))[0] in primary_set),
-            'caption': sorted(f for f in set(self._get_zipfile(self._captions_path).namelist()) if self._file_name(f) in primary_set and self._file_ext(f) in supported_ext and not any(f.startswith(prefix) for prefix in unspported_prefix)),
+            'caption': sorted(f for f in set(self._get_zipfile(self._captions_path).namelist()) if self._file_name(f) in primary_set),
             'vocab': sorted(set(self._get_jsonfile(self._vocab_path).keys())),
         }
+        print(len(self._all_fnames['image']), len(self._all_fnames['mask']), len(self._all_fnames['label']) , len(self._all_fnames['caption']) )
+        assert len(self._all_fnames['image']) == len(self._all_fnames['mask']) == len(self._all_fnames['label']) == len(self._all_fnames['caption']), 'Number of files must match'
         
 
     def _file_name(self, fname):
@@ -115,9 +117,8 @@ class CocoStuffGraphDataset(Dataset):
             
     # load the preprocessed image and mask from the coco dataset
     def _load_images(self, idx):
-        raw_idx = self._raw_idx[idx]
-        image = self._load_attribute_image(raw_idx, attribute='image', path=self._image_path)
-        mask = self._load_attribute_image(raw_idx, attribute='mask', path=self._mask_path)
+        image = self._load_attribute_image(idx, attribute='image', path=self._image_path)
+        mask = self._load_attribute_image(idx, attribute='mask', path=self._mask_path)
         assert isinstance(image, np.ndarray)
         assert isinstance(mask, np.ndarray)
         assert list(image.shape) == self._raw_shape[1:]
@@ -132,14 +133,12 @@ class CocoStuffGraphDataset(Dataset):
         return label
     
     def _load_label(self, idx):
-        raw_idx = self._raw_idx[idx]
-        f_key = self._all_fnames['label'][raw_idx]
+        f_key = self._all_fnames['label'][idx]
         label = self._get_jsonfile(self._labels_path)[f_key]
         return label
     
     def _load_caption(self, idx):
-        raw_idx = self._raw_idx[idx]
-        fname = self._all_fnames['caption'][raw_idx]
+        fname = self._all_fnames['caption'][idx]
         with self._open_file(fname, self._captions_path) as f:
             caption = np.load(f)
         return caption
@@ -148,9 +147,10 @@ class CocoStuffGraphDataset(Dataset):
     def __getitem__(self, idx: int) -> HeteroData:
 
         data = RelaxedHeteroData() # create hetero data object for hig
-        img, mask = self._load_images(idx)
-        label = self._load_label(idx)
-        caption = self._load_caption(idx)
+        raw_idx = self._raw_idx[idx]
+        img, mask = self._load_images(raw_idx)
+        label = self._load_label(raw_idx)
+        caption = self._load_caption(raw_idx)
 
         data.image = torch.from_numpy(img[np.newaxis,...]).to(torch.float32) # add image to data object
         data.mask = torch.from_numpy(mask[np.newaxis,...]).to(torch.int64) # add mask to data object
