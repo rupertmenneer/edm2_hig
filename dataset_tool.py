@@ -521,7 +521,7 @@ def graphencodecoco(
     vocab_path: str,
     dest: str,
 ):
-    """Encode pixel data to VAE latents."""
+    """Encode graph dataset to compressed precomputed form."""
     if dest == '':
         raise click.ClickException('--dest output filename or directory must not be an empty string')
 
