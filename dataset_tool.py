@@ -530,7 +530,8 @@ def graphencodecoco(
 
     statistics = {k:0 for k in ['img_mean', 'img_std', 'cap_mean', 'cap_std']}
 
-    for idx in range(len(dataset)):
+    # for idx in range(len(dataset)):
+    for idx in tqdm(range(len(dataset)), total=len(dataset)):
         graph = dataset[idx]
 
         raw_idx = dataset._raw_idx[idx]
