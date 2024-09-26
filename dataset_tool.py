@@ -506,22 +506,26 @@ def textencode(
 #----------------------------------------------------------------------------
 
 @cmdline.command()
-@click.option('--img_path',     help='Input json file', metavar='PATH',   type=str, required=True)
-@click.option('--mask_path',     help='Input json file', metavar='PATH',   type=str, required=True)
-@click.option('--label_path',     help='Input json file', metavar='PATH',   type=str, required=True)
+@click.option('--img_path',     help='Input imgs', metavar='PATH',   type=str, required=True)
+@click.option('--mask_path',     help='Input masks', metavar='PATH',   type=str, required=True)
+@click.option('--label_path',     help='Input bounding boxes', metavar='PATH',   type=str, required=True)
+@click.option('--caption_path',     help='Input caption latents', metavar='PATH',   type=str, required=True)
+@click.option('--vocab_path',     help='Input vocab latents', metavar='PATH',   type=str, required=True)
 @click.option('--dest',       help='Output directory or archive name', metavar='PATH',  type=str, required=True)
 
 def graphencodecoco(
     img_path: str,
     mask_path: str,
     label_path: str,
+    caption_path: str,
+    vocab_path: str,
     dest: str,
 ):
     """Encode pixel data to VAE latents."""
     if dest == '':
         raise click.ClickException('--dest output filename or directory must not be an empty string')
 
-    dataset = CocoStuffGraphDataset(img_path, mask_path, labels_path=label_path, xflip=True)
+    dataset = CocoStuffGraphDataset(img_path, mask_path, labels_path=label_path, captions_path=caption_path, vocab_path=vocab_path, xflip=True)
     archive_root_dir, save_bytes, close_dest = open_dest(dest)
 
     for idx in range(len(dataset)):
