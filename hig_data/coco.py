@@ -152,16 +152,16 @@ class CocoStuffGraphDataset(Dataset):
         label = self._load_label(raw_idx)
         caption = self._load_caption(raw_idx)
 
-        data.image = torch.from_numpy(img[np.newaxis,...]).to(torch.float32) # add image to data object
-        data.mask = torch.from_numpy(mask[np.newaxis,...]).to(torch.int64) # add mask to data object
-        data.caption = torch.from_numpy(caption[np.newaxis,...]).to(torch.float32) # add caption to data object
+        data.image = img[np.newaxis,...] # add image to data object
+        data.mask = mask[np.newaxis,...] # add mask to data object
+        data.caption = caption[np.newaxis,...] # add caption to data object
 
         # image and mask must have same resolution unless latent images enabled
         if not self.latent_compression != 1 and data.image.shape[-1] != data.mask.shape[-1]:
             raise IOError('Image and mask must have the same resolution if latent images are not enabled')
 
         # initialise image patch nodes
-        image_patch_placeholder = torch.zeros(self.num_image_nodes, 1, dtype=torch.float32)
+        image_patch_placeholder = np.zeros((self.num_image_nodes, 1), dtype=np.float32)
         data['image_node'].x = image_patch_placeholder
         data['image_node'].pos = self.image_patch_positions
 
@@ -175,12 +175,12 @@ class CocoStuffGraphDataset(Dataset):
         
         class_labels = np.array([l-1 for l in label['obj_class'] if l != 183], dtype=np.int64) # exlcude other class
         class_latents = np.array([self._get_class_latent(l) for l in class_labels], dtype=np.float32)
-        data['instance_node'].x = torch.from_numpy(class_latents).to(torch.float32)
+        data['instance_node'].x = class_latents
         data['instance_node'].label = class_labels # add class labels for convenience
 
         edge_index = torch.combinations(torch.arange(len(class_labels)), with_replacement=False).t()
         edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1)
-        data['instance_node', 'instance_edge', 'instance_node'].edge_index = edge_index
+        data['instance_node', 'instance_edge', 'instance_node'].edge_index = edge_index.numpy()
 
         data = self._create_instance_to_image_edges(data, label)
         return data
@@ -195,20 +195,20 @@ class CocoStuffGraphDataset(Dataset):
             edge_index = np.stack([node_id_repeated, linear_image_idxs], axis=0)
             edges.append(edge_index)
         class_to_image_index = np.concatenate(edges, axis=1) if edges else np.zeros((2, 0), dtype=np.int64)
-        data['instance_node', 'instance_to_image', 'image_node'].edge_index = torch.from_numpy(class_to_image_index) # convert to torch
+        data['instance_node', 'instance_to_image', 'image_node'].edge_index = class_to_image_index # convert to torch
 
         return data
     
     def _create_class_nodes(self, data, mask):
         class_labels = np.array([l for l in np.unique(mask) if l != 255], dtype=np.int64) # Must add 1 to harmonize mask labels with COCOStuff labels, remove unlabeled
         class_latents = np.array([self._get_class_latent(l) for l in class_labels], dtype=np.float32)
-        data['class_node'].x = torch.from_numpy(class_latents).to(torch.float32)
+        data['class_node'].x = class_latents
         data['class_node'].label = class_labels # add class labels for convenience
 
         # densely connect class nodes
         edge_index = torch.combinations(torch.arange(len(class_labels)), with_replacement=False).t()
         edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1)
-        data['class_node', 'class_edge', 'class_node'].edge_index = edge_index
+        data['class_node', 'class_edge', 'class_node'].edge_index = edge_index.numpy()
 
         # create class to image edges from semantic segmentation map
         data = self._create_class_to_image_edges(data, mask)
@@ -221,15 +221,15 @@ class CocoStuffGraphDataset(Dataset):
         for class_node_idx, class_label in enumerate(data['class_node'].label):
             class_mask = np.argwhere(resized_mask == class_label) # get mask idxs for current class
             linear_image_patch_print_line_idxs = (class_mask[0] * self.grid_size + class_mask[1]).long() # linearise image node idxs
-            avg_image_idxs = linear_to_avg_2d_idx(linear_image_patch_print_line_idxs, img_width=self.grid_size) if linear_image_patch_print_line_idxs.nelement() > 0 else torch.zeros(2)
+            avg_image_idxs = linear_to_avg_2d_idx(linear_image_patch_print_line_idxs, img_width=self.grid_size) if linear_image_patch_print_line_idxs.nelement() > 0 else np.zeros(2)
             class_node_pos.append(avg_image_idxs) # get image patch positions
 
             node_id_repeated = np.full((len(linear_image_patch_print_line_idxs),), class_node_idx, dtype=np.int64) # repeat class node idx for each patch
             edge_index = np.stack([node_id_repeated, linear_image_patch_print_line_idxs], axis=0)
             edges.append(edge_index)
         class_to_image_index = np.concatenate(edges, axis=1) if edges else np.zeros((2, 0), dtype=np.int64)
-        data['class_node', 'class_to_image', 'image_node'].edge_index = torch.from_numpy(class_to_image_index) # convert to torch
-        data['class_node'].pos = torch.stack(class_node_pos, dim=0) if class_node_pos else torch.empty((0, 2), dtype=torch.float32) # add class node positions for visualisation
+        data['class_node', 'class_to_image', 'image_node'].edge_index = class_to_image_index 
+        data['class_node'].pos = np.stack(class_node_pos, axis=0) if class_node_pos else np.empty((0, 2), dtype=np.float32) # add class node positions for visualisation
         return data
     
 

@@ -555,18 +555,18 @@ def graphencodecoco(
         archive_fname = f'{out_fname}_graph'
         f = io.BytesIO()
         np.savez(f,
-                 instance_node=graph['instance_node'].x.numpy(),
-                 instance_label=graph['instance_node'].label.numpy(),
+                 instance_node=graph['instance_node'].x,
+                 instance_label=graph['instance_node'].label,
 
-                 class_node=graph['class_node'].x.numpy(),
-                 class_pos=graph['class_node'].pos.numpy(),
-                 class_label=graph['class_node'].label.numpy(),
+                 class_node=graph['class_node'].x,
+                 class_pos=graph['class_node'].pos,
+                 class_label=graph['class_node'].label,
 
-                 class_edge=graph['class_edge'].edge_index.numpy(),
-                 instance_edge=graph['instance_edge'].edge_index.numpy(),
-                 class_to_image=graph['class_to_image'].edge_index.numpy(),
-                 instance_to_image=graph['instance_to_image'].edge_index.numpy(),
-                 caption=graph.caption.numpy(),
+                 class_edge=graph['class_edge'].edge_index,
+                 instance_edge=graph['instance_edge'].edge_index,
+                 class_to_image=graph['class_to_image'].edge_index,
+                 instance_to_image=graph['instance_to_image'].edge_index,
+                 caption=graph.caption,
                  )
         save_bytes(os.path.join(archive_root_dir, archive_fname), f.getvalue())
 
