@@ -22,8 +22,11 @@ import numpy as np
 import PIL.Image
 import torch
 from tqdm import tqdm
+import h5py
 
 from training.encoders import StabilityVAEEncoder, CLIPEncoder
+from hig_data.coco import CocoStuffGraphDataset
+
 
 #----------------------------------------------------------------------------
 
@@ -265,6 +268,18 @@ def open_dest(dest: str) -> Tuple[str, Callable[[str, Union[bytes, str]], None],
         def zip_write_bytes(fname: str, data: Union[bytes, str]):
             zf.writestr(fname, data)
         return '', zip_write_bytes, zf.close
+    
+    if dest_ext == 'hdf5':
+        if os.path.dirname(dest) != '':
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+        hdf5_file = h5py.File(dest, 'w')
+
+        def hdf5_write_data(fname: str, data: Union[bytes, np.ndarray]):
+            if isinstance(data, bytes):
+                data = np.frombuffer(data, dtype=np.uint8)
+            hdf5_file.create_dataset(fname, data=data)
+
+        return '', hdf5_write_data, hdf5_file.close
     else:
         # If the output folder already exists, check that is is
         # empty.
@@ -482,6 +497,65 @@ def textencode(
         archive_fname = f'{os.path.splitext(os.path.basename(idx))[0]}.npy'
         f = io.BytesIO()
         np.save(f, text_latents)
+        save_bytes(os.path.join(archive_root_dir, archive_fname), f.getvalue())
+
+    close_dest()
+
+
+
+#----------------------------------------------------------------------------
+
+@cmdline.command()
+@click.option('--img_path',     help='Input json file', metavar='PATH',   type=str, required=True)
+@click.option('--mask_path',     help='Input json file', metavar='PATH',   type=str, required=True)
+@click.option('--label_path',     help='Input json file', metavar='PATH',   type=str, required=True)
+@click.option('--dest',       help='Output directory or archive name', metavar='PATH',  type=str, required=True)
+
+def graphencodecoco(
+    img_path: str,
+    mask_path: str,
+    label_path: str,
+    dest: str,
+):
+    """Encode pixel data to VAE latents."""
+    if dest == '':
+        raise click.ClickException('--dest output filename or directory must not be an empty string')
+
+    dataset = CocoStuffGraphDataset(img_path, mask_path, labels_path=label_path, xflip=True)
+    archive_root_dir, save_bytes, close_dest = open_dest(dest)
+
+    for idx in range(len(dataset)):
+        graph = dataset[idx]
+
+        # Image
+        archive_fname = f'{os.path.splitext(os.path.basename(idx))[0]}_image.npy'
+        f = io.BytesIO()
+        np.save(f, graph.image.numpy())
+        save_bytes(os.path.join(archive_root_dir, archive_fname), f.getvalue())
+
+        # Mask
+        archive_fname = f'{os.path.splitext(os.path.basename(idx))[0]}_mask.npy'
+        f = io.BytesIO()
+        np.save(f, graph.mask.numpy())
+        save_bytes(os.path.join(archive_root_dir, archive_fname), f.getvalue())
+
+        # Graph
+        archive_fname = f'{os.path.splitext(os.path.basename(idx))[0]}_graph'
+        f = io.BytesIO()
+        np.savez(f,
+                 instance_node=graph['instance_node'].x,
+                 instance_label=graph['instance_node'].label,
+
+                 class_node=graph['class_node'].x,
+                 class_pos=graph['class_node'].pos,
+                 class_label=graph['class_node'].label,
+
+                 class_edge=graph['class_edge'].edge_index,
+                 class_to_image=graph['instance_edge'].edge_index,
+                 class_to_image=graph['class_to_image'].edge_index,
+                 class_to_image=graph['instance_to_image'].edge_index,
+                 caption=graph.caption,
+                 )
         save_bytes(os.path.join(archive_root_dir, archive_fname), f.getvalue())
 
     close_dest()
