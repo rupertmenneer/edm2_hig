@@ -542,13 +542,13 @@ def graphencodecoco(
         # Image
         archive_fname = f'{out_fname}_image.npy'
         f = io.BytesIO()
-        np.save(f, graph.image.numpy())
+        np.save(f, graph.image)
         save_bytes(os.path.join(archive_root_dir, archive_fname), f.getvalue())
 
         # Mask
         archive_fname = f'{out_fname}_mask.npy'
         f = io.BytesIO()
-        np.save(f, graph.mask.numpy())
+        np.save(f, graph.mask)
         save_bytes(os.path.join(archive_root_dir, archive_fname), f.getvalue())
 
         # Graph
@@ -571,10 +571,10 @@ def graphencodecoco(
         save_bytes(os.path.join(archive_root_dir, archive_fname), f.getvalue())
 
         # Statistics
-        statistics['img_mean'] += graph.image.numpy().mean(axis=(-2,-1))
-        statistics['img_std'] += graph.image.numpy().std(axis=(-2,-1))
-        statistics['cap_mean'] += graph.caption.numpy().mean()
-        statistics['cap_std'] += graph.caption.numpy().std()
+        statistics['img_mean'] += graph.image.mean(axis=(-2,-1))
+        statistics['img_std'] += graph.image.std(axis=(-2,-1))
+        statistics['cap_mean'] += graph.caption.mean()
+        statistics['cap_std'] += graph.caption.std()
 
     # Save statistics
     statistics = {k:v/len(dataset) for k,v in statistics.items()}
