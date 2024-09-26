@@ -66,6 +66,7 @@ class CocoStuffGraphDataset(Dataset):
         self._files = {}  # Store file references
         primary_list = sorted(fname for fname in set(self._get_zipfile(self._image_path).namelist()) if self._file_ext(fname) in supported_ext and not any(fname.startswith(prefix) for prefix in unspported_prefix))
         primary_set = set([os.path.splitext(os.path.basename(f))[0] for f in primary_list])
+        print('Found {} complete datapoint in {}'.format(len(primary_set), self._image_path))
         self._all_fnames = {
             'image': primary_list,
             'mask': sorted(f for f in set(self._get_zipfile(self._mask_path).namelist()) if self._file_name(f) in primary_set and self._file_ext(f) in supported_ext and not any(f.startswith(prefix) for prefix in unspported_prefix)),
