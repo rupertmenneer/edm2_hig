@@ -64,19 +64,38 @@ class CocoStuffGraphDataset(Dataset):
         supported_ext = PIL.Image.EXTENSION.keys() | {'.npy'}
         unspported_prefix = ['.', '__', '__MACOSX/']
         self._files = {}  # Store file references
+
         primary_list = sorted(fname for fname in set(self._get_zipfile(self._image_path).namelist()) if self._file_ext(fname) in supported_ext and not any(fname.startswith(prefix) for prefix in unspported_prefix))
-        primary_set = set([os.path.splitext(os.path.basename(f))[0] for f in primary_list])
-        print('Found {} complete datapoint in {}'.format(len(primary_set), self._image_path))
+        file_sets = [primary_list, self._get_zipfile(self._mask_path).namelist(), self._get_jsonfile(self._labels_path).keys(), self._get_zipfile(self._captions_path).namelist()]
+        complete_sets = self._extract_complete_suffix_set_files(file_sets)
+
+        print('Found {} complete datapoint in {}'.format(len(complete_sets), self._image_path))
+        
         self._all_fnames = {
-            'image': primary_list,
-            'mask': sorted(f for f in set(self._get_zipfile(self._mask_path).namelist()) if self._file_name(f) in primary_set),
-            'label': sorted(f for f in set(self._get_jsonfile(self._labels_path).keys()) if os.path.splitext(os.path.basename(f))[0] in primary_set),
-            'caption': sorted(f for f in set(self._get_zipfile(self._captions_path).namelist()) if self._file_name(f) in primary_set),
+            'image': sorted(f for f in set(self._get_zipfile(self._image_path).namelist()) if self._file_name(f) in complete_sets),
+            'mask': sorted(f for f in set(self._get_zipfile(self._mask_path).namelist()) if self._file_name(f) in complete_sets),
+            'label': sorted(f for f in set(self._get_jsonfile(self._labels_path).keys()) if self._file_name(f) in complete_sets),
+            'caption': sorted(f for f in set(self._get_zipfile(self._captions_path).namelist()) if self._file_name(f) in complete_sets),
             'vocab': sorted(set(self._get_jsonfile(self._vocab_path).keys())),
         }
-        print(len(self._all_fnames['image']), len(self._all_fnames['mask']), len(self._all_fnames['label']) , len(self._all_fnames['caption']) )
         assert len(self._all_fnames['image']) == len(self._all_fnames['mask']) == len(self._all_fnames['label']) == len(self._all_fnames['caption']), 'Number of files must match'
         
+
+    # Function to extract unique IDs
+    def _extract_complete_suffix_set_files(self, sets_of_file_lists):
+        complete_sets = set()
+        sets_to_check = [set(self._file_name(f) for f in l) for l in sets_of_file_lists]
+        for i, file in enumerate(sets_of_file_lists[0]):  # list over first file list
+            file_name = self._file_name(file)
+
+            if file_name in complete_sets:
+                continue
+            # check this file exists in all other file lists
+            if all(file_name in s for s in sets_to_check):  # Check all paths in one go
+                complete_sets.add(file_name)
+                
+        return complete_sets
+
 
     def _file_name(self, fname):
         return os.path.splitext(os.path.basename(fname))[0]

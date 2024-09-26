@@ -536,7 +536,7 @@ def graphencodecoco(
 
         raw_idx = dataset._raw_idx[idx]
         image_filename = dataset._file_name(dataset._all_fnames['image'][raw_idx])
-        is_flipped = dataset._xflip[raw_idx]
+        is_flipped = dataset._xflip[idx]
         out_fname = f"{image_filename}-f" if is_flipped else image_filename
 
         # Image
