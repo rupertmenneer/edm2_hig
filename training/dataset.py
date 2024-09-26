@@ -104,19 +104,6 @@ class Dataset(torch.utils.data.Dataset):
                 image = image.reshape(*image.shape[:2], -1).transpose(2, 0, 1)
         return image
 
-    def __getitem__(self, idx):
-        raw_idx = self._raw_idx[idx]
-        image = self._cached_images.get(raw_idx, None)
-        if image is None:
-            image = self._load_raw_image(raw_idx)
-            if self._cache:
-                self._cached_images[raw_idx] = image
-        assert isinstance(image, np.ndarray)
-        assert list(image.shape) == self._raw_shape[1:]
-        if self._xflip[idx]:
-            assert image.ndim == 3 # CHW
-            image = image[:, :, ::-1]
-        return image.copy(), self.get_label(idx)
 
     def get_label(self, idx):
         label = self._get_raw_labels()[self._raw_idx[idx]]

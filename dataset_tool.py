@@ -531,20 +531,25 @@ def graphencodecoco(
     for idx in range(len(dataset)):
         graph = dataset[idx]
 
+        raw_idx = dataset._raw_idx[idx]
+        image_filename = dataset._file_name(dataset._all_fnames['image'][raw_idx])
+        is_flipped = dataset._xflip[raw_idx]
+        out_fname = f"{image_filename}-f" if is_flipped else image_filename
+
         # Image
-        archive_fname = f'{os.path.splitext(os.path.basename(idx))[0]}_image.npy'
+        archive_fname = f'{out_fname}_image.npy'
         f = io.BytesIO()
         np.save(f, graph.image.numpy())
         save_bytes(os.path.join(archive_root_dir, archive_fname), f.getvalue())
 
         # Mask
-        archive_fname = f'{os.path.splitext(os.path.basename(idx))[0]}_mask.npy'
+        archive_fname = f'{out_fname}_mask.npy'
         f = io.BytesIO()
         np.save(f, graph.mask.numpy())
         save_bytes(os.path.join(archive_root_dir, archive_fname), f.getvalue())
 
         # Graph
-        archive_fname = f'{os.path.splitext(os.path.basename(idx))[0]}_graph'
+        archive_fname = f'{out_fname}_graph'
         f = io.BytesIO()
         np.savez(f,
                  instance_node=graph['instance_node'].x,
