@@ -46,7 +46,7 @@ class EDM2Loss:
         sigma = (rnd_normal * self.P_std + self.P_mean).exp()
         weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
         noise = torch.randn_like(images) * sigma
-        denoised, logvar = net(images + noise, sigma=sigma, graph=graph, return_logvar=True)
+        denoised, logvar = net(images + noise, sigma=sigma, graph=graph, class_labels=labels, return_logvar=True)
         loss = (weight / logvar.exp()) * ((denoised - images) ** 2) + logvar
         return loss
 
@@ -54,7 +54,7 @@ class EDM2Loss:
 # Learning rate decay schedule used in the paper "Analyzing and Improving
 # the Training Dynamics of Diffusion Models".
 
-def learning_rate_schedule(cur_nimg, batch_size, ref_lr=100e-4, ref_batches=70e3, rampup_Mimg=10):
+def learning_rate_schedule(cur_nimg, batch_size, ref_lr=100e-4, ref_batches=70e3, rampup_Mimg=5):
     lr = ref_lr
     if ref_batches > 0:
         lr /= np.sqrt(max(cur_nimg / (ref_batches * batch_size), 1))
@@ -63,13 +63,17 @@ def learning_rate_schedule(cur_nimg, batch_size, ref_lr=100e-4, ref_batches=70e3
     return lr
 
 #----------------------------------------------------------------------------
+def worker_init_fn(worker_id):
+    worker_info = torch.utils.data.get_worker_info()
+    worker_info.dataset.hdf_file = None  # Reset the file handle for each worker
+#----------------------------------------------------------------------------
 # Main training loop.
 
 def training_loop(
-    dataset_kwargs      = dict(class_name='hig_data.coco.CocoStuffGraphDataset',),
+    dataset_kwargs      = dict(class_name='hig_data.coco.COCOStuffGraphPrecomputedDataset',),
     encoder_kwargs      = dict(class_name='training.encoders.StabilityVAEEncoder'),
-    data_loader_kwargs  = dict(class_name='torch_geometric.loader.DataLoader', pin_memory=True, num_workers=4, prefetch_factor=4),
-    network_kwargs      = dict(class_name='training.networks_edm2_hignn.Precond'),
+    data_loader_kwargs  = dict(class_name='torch_geometric.loader.DataLoader', pin_memory=True, num_workers=4, prefetch_factor=4, worker_init_fn=worker_init_fn),
+    network_kwargs      = dict(class_name='training.networks_edm2_hignn.Precond', label_dim=768),
     loss_kwargs         = dict(class_name='training.training_loop_hignn.EDM2Loss'),
     optimizer_kwargs    = dict(class_name='torch.optim.Adam', betas=(0.9, 0.99)),
     lr_kwargs           = dict(func_name='training.training_loop_hignn.learning_rate_schedule'),
@@ -121,6 +125,7 @@ def training_loop(
     assert status_nimg is None or status_nimg % batch_size == 0
     assert snapshot_nimg is None or (snapshot_nimg % batch_size == 0 and snapshot_nimg % 1024 == 0)
     assert checkpoint_nimg is None or (checkpoint_nimg % batch_size == 0 and checkpoint_nimg % 1024 == 0)
+    dist.print0(f"True adjusted batch per GPU {batch_gpu} for {num_accumulation_rounds} accumulation rounds.")
 
     # Setup dataset, encoder, and network.
     dist.print0('Loading dataset...')
@@ -308,7 +313,8 @@ def training_loop(
                 graph_batch = next(dataset_iterator).to(device)
                 image_latents = encoder.encode_latents(graph_batch.image.to(device))
                 graph_batch = None if cfg_dropout != 0.0 and np.random.rand() < cfg_dropout else graph_batch
-                loss = loss_fn(net=ddp, images = image_latents, graph=graph_batch,)
+                labels = None if graph_batch is None else graph_batch.caption
+                loss = loss_fn(net=ddp, images = image_latents, graph=graph_batch, labels=labels)
                 training_stats.report('Loss/loss', loss)
                 if dist.get_rank() == 0 and wandb.run is not None:
                         wandb.log({"train/loss": torch.mean(loss).detach(), "nimg": state.cur_nimg})
@@ -341,3 +347,4 @@ def get_single_batch(dataset, class_name, n=8):
     data_loader = iter(dnnlib.util.construct_class_by_name(class_name=class_name, dataset=dataset, batch_size=n, pin_memory=True, num_workers=1, prefetch_factor=1))
     batch = next(iter(data_loader)).clone().detach()
     return batch
+

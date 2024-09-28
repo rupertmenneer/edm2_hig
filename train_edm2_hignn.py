@@ -31,7 +31,7 @@ config_presets = {
     'edm2-img64-m':     dnnlib.EasyDict(duration=2048<<20, batch=2048, channels=256, lr=0.0090, decay=35000, dropout=0.10, P_mean=-0.8, P_std=1.6),
     'edm2-img64-l':     dnnlib.EasyDict(duration=1024<<20, batch=2048, channels=320, lr=0.0080, decay=35000, dropout=0.10, P_mean=-0.8, P_std=1.6),
     'edm2-img64-xl':    dnnlib.EasyDict(duration=640<<20,  batch=2048, channels=384, lr=0.0070, decay=35000, dropout=0.10, P_mean=-0.8, P_std=1.6),
-    'edm2-coco256-s':    dnnlib.EasyDict(duration=2048<<20, batch=1024, channels=192, lr=0.0090, decay=35000, dropout=0.00, P_mean=-0.4, P_std=1.0),
+    'edm2-coco256-s':    dnnlib.EasyDict(duration=2048<<20, batch=2048, channels=192, lr=0.0090, decay=70000, dropout=0.00, P_mean=-0.4, P_std=1.0),
 }
 
 #----------------------------------------------------------------------------
@@ -146,8 +146,8 @@ def parse_nimg(s):
 @click.option('--preset',           help='Configuration preset', metavar='STR',                 type=str, default='edm2-img512-s', show_default=True)
 
 # COCO
-@click.option('--path',             help='Path to the dataset', metavar='ZIP|DIR',              type=str, required=True)
-@click.option('--val_path',         help='Path to the dataset', metavar='ZIP|DIR',              type=str, required=True)
+@click.option('--path',             help='Path to the dataset', metavar='H5|ZIP|DIR',              type=str, required=True)
+@click.option('--val_path',         help='Path to the dataset', metavar='H5|ZIP|DIR',              type=str, required=True)
 
 # Hyperparameters.
 @click.option('--duration',         help='Training duration', metavar='NIMG',                   type=parse_nimg, default=None)

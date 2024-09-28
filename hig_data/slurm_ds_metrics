@@ -20,9 +20,9 @@
 #SBATCH --ntasks=1
 #! Specify the number of GPUs per node (between 1 and 4; must be 4 if nodes>1).
 #! Note that the job submission script will enforce no more than 32 cpus per GPU.
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:1
 #! How much wallclock time will be required?
-#SBATCH --time=1:00:00
+#SBATCH --time=00:45:00
 #! What types of email messages do you wish to receive?
 #SBATCH --mail-type=NONE
 #! Uncomment this to prevent the job from being requeued (e.g. if
@@ -63,22 +63,8 @@ conda activate edm2
 
 export WANDB_API_KEY='150e3a3656bc3e6c76366ee98da5b0fd9f7c16ea'
 
-# OMP_NUM_THREADS=14 torchrun --nproc_per_node=4 --standalone /scratch2/axolotl/vlm_weather/train_vlm.py \
-# --outdir=/scratch2/axolotl/vlm_weather/ \
-# --preset=paligemma_fine_tune_lora \
-# --path=/scratch2/axolotl_data \
-# --dataset_size=5000 \
-# --batch-gpu=8
-
-
 #! Full path to application executable: 
-application="torchrun --nproc_per_node=2 --standalone /rds/user/rfsm2/hpc-work/edm2_hig/train_edm2_hignn.py \
---outdir=/home/rfsm2/rds/hpc-work/training_runs \
---preset=edm2-coco256-s \
---batch-gpu=512 \
---cond=True \
---path=/home/rfsm2/rds/hpc-work/datasets/coco/coco_train2017_hig.h5 \
---val_path=/home/rfsm2/rds/hpc-work/datasets/coco/coco_val2017_hig.h5"
+application="python /home/rfsm2/rds/hpc-work/edm2_hig/hig_data/dataset_metrics.py"
 
 #! Work directory (i.e. where the job will run):
 workdir="$SLURM_SUBMIT_DIR"  # The value of SLURM_SUBMIT_DIR sets workdir to the directory

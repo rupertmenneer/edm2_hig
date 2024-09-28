@@ -269,17 +269,6 @@ def open_dest(dest: str) -> Tuple[str, Callable[[str, Union[bytes, str]], None],
             zf.writestr(fname, data)
         return '', zip_write_bytes, zf.close
     
-    if dest_ext == 'hdf5':
-        if os.path.dirname(dest) != '':
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-        hdf5_file = h5py.File(dest, 'w')
-
-        def hdf5_write_data(fname: str, data: Union[bytes, np.ndarray]):
-            if isinstance(data, bytes):
-                data = np.frombuffer(data, dtype=np.uint8)
-            hdf5_file.create_dataset(fname, data=data)
-
-        return '', hdf5_write_data, hdf5_file.close
     else:
         # If the output folder already exists, check that is is
         # empty.
@@ -433,12 +422,14 @@ def convert(
 @click.option('--source',     help='Input directory or archive name', metavar='PATH',   type=str, required=True)
 @click.option('--dest',       help='Output directory or archive name', metavar='PATH',  type=str, required=True)
 @click.option('--max-images', help='Maximum number of images to output', metavar='INT', type=int)
+@click.option('--xflip',       help='Compute ONLY flipped', type=bool, required=True)
 
 def encode(
     model_url: str,
     source: str,
     dest: str,
     max_images: Optional[int],
+    xflip: bool,
 ):
     """Encode pixel data to VAE latents."""
     PIL.Image.init()
@@ -452,9 +443,10 @@ def encode(
 
     for idx, image in tqdm(enumerate(input_iter), total=num_files):
         img_tensor = torch.tensor(image.img).to('cuda').permute(2, 0, 1).unsqueeze(0)
+        if xflip:
+            print(img_tensor.shape)
+            img_tensor = img_tensor.flip(-1) # horiz flip -> we must do this offline as flipped latents don't produce flipped images
         mean_std = vae.encode_pixels(img_tensor)[0].cpu()
-        # idx_str = f'{idx:08d}'
-        # archive_fname = f'{idx_str[:5]}/img-mean-std-{idx_str}.npy'
         archive_fname = f'{os.path.splitext(os.path.basename(image.fname))[0]}.npy'
 
         f = io.BytesIO()
@@ -506,84 +498,82 @@ def textencode(
 #----------------------------------------------------------------------------
 
 @cmdline.command()
-@click.option('--img_path',     help='Input imgs', metavar='PATH',   type=str, required=True)
+@click.option('--img_path',     help='Input imgs latents', metavar='PATH',   type=str, required=True)
+@click.option('--image_path_flipped',  help='Input latents flipped', metavar='PATH',   type=str, required=True)
 @click.option('--mask_path',     help='Input masks', metavar='PATH',   type=str, required=True)
 @click.option('--label_path',     help='Input bounding boxes', metavar='PATH',   type=str, required=True)
 @click.option('--caption_path',     help='Input caption latents', metavar='PATH',   type=str, required=True)
 @click.option('--vocab_path',     help='Input vocab latents', metavar='PATH',   type=str, required=True)
 @click.option('--dest',       help='Output directory or archive name', metavar='PATH',  type=str, required=True)
+@click.option('--xflip',       help='Compute flipped', type=bool, required=True)
 
 def graphencodecoco(
     img_path: str,
+    image_path_flipped: str,
     mask_path: str,
     label_path: str,
     caption_path: str,
     vocab_path: str,
     dest: str,
+    xflip: bool,
 ):
     """Encode graph dataset to compressed precomputed form."""
     if dest == '':
         raise click.ClickException('--dest output filename or directory must not be an empty string')
+    assert os.path.splitext(dest)[1].lower() == '.h5', 'graph encode expects output dir to be h5 format'
 
-    dataset = CocoStuffGraphDataset(img_path, mask_path, labels_path=label_path, captions_path=caption_path, vocab_path=vocab_path, xflip=True)
-    archive_root_dir, save_bytes, close_dest = open_dest(dest)
-
+    dataset = CocoStuffGraphDataset(img_path, mask_path, labels_path=label_path, captions_path=caption_path, vocab_path=vocab_path, image_path_flipped=image_path_flipped, xflip=xflip)
     statistics = {k:0 for k in ['img_mean', 'img_std', 'cap_mean', 'cap_std']}
 
-    # for idx in range(len(dataset)):
-    for idx in tqdm(range(len(dataset)), total=len(dataset)):
-        graph = dataset[idx]
+    with h5py.File(dest, 'w') as hdf:
+        for idx in tqdm(range(len(dataset)), total=len(dataset)):
 
-        raw_idx = dataset._raw_idx[idx]
-        image_filename = dataset._file_name(dataset._all_fnames['image'][raw_idx])
-        is_flipped = dataset._xflip[idx]
-        out_fname = f"{image_filename}-f" if is_flipped else image_filename
+            # get graph and file name
+            graph = dataset[idx]
+            raw_idx = dataset._raw_idx[idx]
+            image_filename = dataset._file_name(dataset._all_fnames['image'][raw_idx])
+            out_fname = image_filename
+            if xflip:
+                is_flipped = dataset._xflip[idx]
+                out_fname = f"{image_filename}-f" if is_flipped else image_filename
+                
+            # create group for datapoint
+            group = hdf.create_group(out_fname)
 
-        # Image
-        archive_fname = f'{out_fname}_image.npy'
-        f = io.BytesIO()
-        np.save(f, graph.image)
-        save_bytes(os.path.join(archive_root_dir, archive_fname), f.getvalue())
+            # Store image/mask/caption arrays
+            group.create_dataset('image', data=graph.image, compression="gzip")
+            group.create_dataset('mask', data=graph.mask, compression="gzip")
+            group.create_dataset('caption', data=graph.caption, compression="gzip") 
 
-        # Mask
-        archive_fname = f'{out_fname}_mask.npy'
-        f = io.BytesIO()
-        np.save(f, graph.mask)
-        save_bytes(os.path.join(archive_root_dir, archive_fname), f.getvalue())
+            # Store graph components as separate datasets to a sub group
+            graph_group = group.create_group('graph')
+            graph_group.create_dataset('instance_node', data=graph['instance_node'].x, compression="gzip")
+            graph_group.create_dataset('instance_label', data=graph['instance_node'].label, compression="gzip")
 
-        # Graph
-        archive_fname = f'{out_fname}_graph'
-        f = io.BytesIO()
-        np.savez(f,
-                 instance_node=graph['instance_node'].x,
-                 instance_label=graph['instance_node'].label,
+            graph_group.create_dataset('class_node', data=graph['class_node'].x, compression="gzip")
+            graph_group.create_dataset('class_pos', data=graph['class_node'].pos, compression="gzip")
+            graph_group.create_dataset('class_label', data=graph['class_node'].label, compression="gzip")
 
-                 class_node=graph['class_node'].x,
-                 class_pos=graph['class_node'].pos,
-                 class_label=graph['class_node'].label,
+            graph_group.create_dataset('class_edge', data=graph['class_edge'].edge_index, compression="gzip")
+            graph_group.create_dataset('instance_edge', data=graph['instance_edge'].edge_index, compression="gzip")
+            
+            graph_group.create_dataset('class_to_image', data=graph['class_to_image'].edge_index, compression="gzip")
+            graph_group.create_dataset('instance_to_image', data=graph['instance_to_image'].edge_index, compression="gzip")
 
-                 class_edge=graph['class_edge'].edge_index,
-                 instance_edge=graph['instance_edge'].edge_index,
-                 class_to_image=graph['class_to_image'].edge_index,
-                 instance_to_image=graph['instance_to_image'].edge_index,
-                 caption=graph.caption,
-                 )
-        save_bytes(os.path.join(archive_root_dir, archive_fname), f.getvalue())
+            # Statistics
+            statistics['img_mean'] += graph.image.mean(axis=(-2,-1))
+            statistics['img_std'] += graph.image.std(axis=(-2,-1))
+            statistics['cap_mean'] += graph.caption.mean()
+            statistics['cap_std'] += graph.caption.std()
 
-        # Statistics
-        statistics['img_mean'] += graph.image.mean(axis=(-2,-1))
-        statistics['img_std'] += graph.image.std(axis=(-2,-1))
-        statistics['cap_mean'] += graph.caption.mean()
-        statistics['cap_std'] += graph.caption.std()
+        # Save statistics
+        statistics = {k:v/len(dataset) for k,v in statistics.items()}
+        group = hdf.create_group('statistics')
+        group.create_dataset('img_mean', data=statistics['img_mean'], compression="gzip")
+        group.create_dataset('img_std', data=statistics['img_std'], compression="gzip")
+        group.create_dataset('cap_mean', data=np.array(statistics['cap_mean']),) 
+        group.create_dataset('cap_std', data=np.array(statistics['cap_std']),) 
 
-    # Save statistics
-    statistics = {k:v/len(dataset) for k,v in statistics.items()}
-    archive_fname = 'statistics'
-    f = io.BytesIO()
-    np.savez(f, **statistics)
-    save_bytes(os.path.join(archive_root_dir, archive_fname), f.getvalue())
-    
-    close_dest()
 
 #----------------------------------------------------------------------------
 

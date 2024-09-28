@@ -274,7 +274,7 @@ class UNet(torch.nn.Module):
         # Embedding.
         emb = self.emb_noise(self.emb_fourier(noise_labels))
         if self.emb_label is not None:
-            emb = mp_sum(emb, self.emb_label(class_labels * np.sqrt(class_labels.shape[1])), t=self.label_balance)
+            emb = mp_sum(emb, self.emb_label(class_labels), t=self.label_balance)
         emb = mp_silu(emb)
 
         if graph is not None: # MODIFICATION: scale cond nodes if present
