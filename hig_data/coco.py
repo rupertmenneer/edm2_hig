@@ -190,17 +190,17 @@ class CocoStuffGraphDataset(Dataset):
             raise IOError('Image and mask must have the same resolution if latent images are not enabled')
 
         # initialise image patch nodes
-        image_patch_placeholder = np.zeros((self.num_image_nodes, 1), dtype=np.float32)
+        image_patch_placeholder = np.zeros((self.num_image_nodes, 1), dtype=np.float32,)
         data['image_node'].x = image_patch_placeholder
         data['image_node'].pos = self.image_patch_positions
 
         # create class/instance nodes from semantic segmentation map/labels (bounding boxes)
         self._create_class_nodes(data, mask)
-        self._create_instance_nodes(data, label)
+        self._create_instance_nodes(data, label, idx)
 
         return data
     
-    def _create_instance_nodes(self, data, label):
+    def _create_instance_nodes(self, data, label, idx):
         
         class_labels = np.array([l-1 for l in label['obj_class'] if l != 183], dtype=np.int64) # exlcude other class
         class_latents = np.array([self._get_class_latent(l) for l in class_labels], dtype=np.float32)
@@ -211,15 +211,16 @@ class CocoStuffGraphDataset(Dataset):
         edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1)
         data['instance_node', 'instance_edge', 'instance_node'].edge_index = edge_index.numpy()
 
-        data = self._create_instance_to_image_edges(data, label)
+        data = self._create_instance_to_image_edges(data, label, idx)
         return data
     
-    def _create_instance_to_image_edges(self, data, label):
+    def _create_instance_to_image_edges(self, data, label, idx):
         edges = []
+        is_flipped = self._xflip[idx]
         bounding_boxes = [bb for i, bb in enumerate(label['obj_bbox']) if label['obj_class'][i] != 183] # exclude other class
         for class_node_idx, bounding_box in enumerate(bounding_boxes):
             # get bounding box coordinates
-            linear_image_idxs = bbox_to_linear_indices(bounding_box, image_size=(self.grid_size, self.grid_size))
+            linear_image_idxs = bbox_to_linear_indices(bounding_box, image_size=(self.grid_size, self.grid_size), is_flipped=is_flipped)
             node_id_repeated = np.full((len(linear_image_idxs),), class_node_idx, dtype=np.int64) # repeat class node idx for each patch
             edge_index = np.stack([node_id_repeated, linear_image_idxs], axis=0)
             edges.append(edge_index)
@@ -275,7 +276,7 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
                 path,                       # Path to h5 image/mask/graph dataset
                 graph_transform = None,     # Transform to apply to the graph.
                 max_size    = None,         # Maximum number of items to load.
-                cache       = True,         # Cache images in CPU memory?
+                cache       = False,         # Cache images in CPU memory?
                 random_seed = 0,            # Random seed to use when applying max_size.
                 **kwargs,                   
         ) -> None:
@@ -348,9 +349,15 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
             data['instance_node'].x = torch.from_numpy(graph_group['instance_node'][:]).to(torch.float32)
             data['instance_node'].label = torch.from_numpy(graph_group['instance_label'][:]).to(torch.float32)
 
+            # ---- Image Caption
+            # data['caption_node'].x = data.caption if data.caption.shape[0] != 0 else torch.empty((0, 768))
+
             # ---- Edges
             data['class_node', 'class_edge', 'class_node'].edge_index = torch.from_numpy(graph_group['class_edge'][:]).to(torch.long) if graph_group['class_edge'][:].shape[1] != 0 else torch.empty((2, 0), dtype=torch.long)
+            data = self.connect_instance_and_class(data)
+            # data = self.connect_with_clip_similarity(data)
             data['instance_node', 'instance_edge', 'instance_node'].edge_index = torch.from_numpy(graph_group['instance_edge'][:]).to(torch.long) if graph_group['instance_edge'][:].shape[1] != 0 else torch.empty((2, 0), dtype=torch.long)
+
             # class to image
             data['class_node', 'class_to_image', 'image_node'].edge_index = torch.from_numpy(graph_group['class_to_image'][:]).to(torch.long) if graph_group['class_to_image'][:].shape[1] != 0 else torch.empty((2, 0), dtype=torch.long)
             data['image_node', 'image_to_class', 'class_node'].edge_index = torch.flip(data['class_node', 'class_to_image', 'image_node'].edge_index, [0])
@@ -369,11 +376,42 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
         data = self._load_coco_files(idx)
 
         # ---- add image node placeholder
-        image_patch_placeholder = torch.empty((data.image.shape[-2]*data.image.shape[-1], 1), dtype=torch.float32) # must init be same size for correct minibatching
+        image_patch_placeholder = torch.empty((data.image.shape[-2]*data.image.shape[-1], 1), dtype=torch.float32, device=data.image.device) # must init be same size for correct minibatching
         data['image_node'].x = image_patch_placeholder
         data['image_node'].pos = self.image_patch_positions
 
         return data
+    
+    def connect_with_clip_similarity(self, data):
+        # Compute cosine similarity between caption node and class nodes
+        similarities = torch.nn.functional.cosine_similarity(data.caption.unsqueeze(1), data['class_node'].x.unsqueeze(0), dim=-1)
+        # Get the top 3 most similar class nodes for each caption node
+        _, topk_indices = torch.topk(similarities, k=3, dim=-1)
+        # Create indices for the caption nodes (repeated for each of the top 3 class nodes)
+        caption_indices = torch.arange(1).repeat_interleave(3)
+        # Flatten topk_indices to align with caption_indices
+        class_indices = topk_indices.view(-1)
+        # Stack the caption and class indices to create the edge_index
+        edge_index = torch.stack([caption_indices, class_indices], dim=0)
+        # Assign the edge_index to the edge type 'caption_to_class'
+        data['caption_node', 'caption_to_class', 'class_node'].edge_index = edge_index
+        return data
+    
+
+    def connect_instance_and_class(self, data):
+        # Get the class labels and instance labels
+        class_labels = data['class_node'].label
+        instance_labels = data['instance_node'].label
+        # Find where class labels match instance labels using broadcasting
+        # This will create a matrix where each (i, j) is True if instance_label[j] == class_label[i]
+        match_matrix = (class_labels[:, None] == instance_labels[None, :])
+        # Get the indices where the labels match
+        class_indices, instance_indices = match_matrix.nonzero(as_tuple=True)
+        # Stack the indices into an edge index and assign it
+        edge_index = torch.stack([instance_indices, class_indices], dim=0)
+        data['instance_node', 'instance_to_classs', 'class_node'].edge_index = edge_index
+        return data
+
 
     def safe_key_pos_open(self, class_pos):
         if class_pos is None or class_pos.size == 0 or class_pos.shape != (len(class_pos), 2):
@@ -445,7 +483,7 @@ def linear_to_2d_idx(idx, img_width=32, patch_size=1):
     col = (idx % img_width).float() * patch_size
     return torch.stack([row, col]).long()
 
-def bbox_to_linear_indices(bbox, image_size):
+def bbox_to_linear_indices(bbox, image_size, is_flipped):
     """
     Converts normalized bounding box coordinates to linear pixel indices within the image.
 
@@ -458,6 +496,10 @@ def bbox_to_linear_indices(bbox, image_size):
     """
     xmin, ymin, xmax, ymax = bbox
     H, W = image_size
+
+    # Flip bounding box horizontally if the image is flipped
+    if is_flipped:
+        xmin, xmax = 1 - xmax, 1 - xmin
 
     # Convert normalized coordinates to pixel indices
     xmin_pix = int(np.floor(xmin * W))
@@ -482,3 +524,4 @@ def bbox_to_linear_indices(bbox, image_size):
     linear_indices = y_indices * W + x_indices
 
     return linear_indices
+

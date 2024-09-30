@@ -99,8 +99,12 @@ def open_image_folder(source_dir, *, max_images: Optional[int]) -> tuple[int, It
 
     def iterate_images():
         for idx, fname in enumerate(input_images):
-            img = np.array(PIL.Image.open(fname).convert('RGB'))
-            yield ImageEntry(img=img, label=labels.get(arch_fnames[fname]), fname=fname)
+            try:
+                img = np.array(PIL.Image.open(fname).convert('RGB'))
+                yield ImageEntry(img=img, label=labels.get(arch_fnames[fname]), fname=fname)
+            except PIL.UnidentifiedImageError: # catch image file errors
+                    print(f"Skipping corrupted image: {fname}")
+                    continue
             if idx >= max_idx - 1:
                 break
     return max_idx, iterate_images()
@@ -123,9 +127,13 @@ def open_image_zip(source, *, max_images: Optional[int]) -> tuple[int, Iterator[
     def iterate_images():
         with zipfile.ZipFile(source, mode='r') as z:
             for idx, fname in enumerate(input_images):
-                with z.open(fname, 'r') as file:
-                    img = np.array(PIL.Image.open(file).convert('RGB'))
-                yield ImageEntry(img=img, label=labels.get(fname), fname=fname)
+                try:
+                    with z.open(fname, 'r') as file:
+                        img = np.array(PIL.Image.open(file).convert('RGB'))
+                    yield ImageEntry(img=img, label=labels.get(fname), fname=fname)
+                except PIL.UnidentifiedImageError: # catch image file errors
+                    print(f"Skipping corrupted image: {fname}")
+                    continue
                 if idx >= max_idx - 1:
                     break
     return max_idx, iterate_images()
@@ -379,8 +387,7 @@ def convert(
 
     labels = []
     for idx, image in tqdm(enumerate(input_iter), total=num_files):
-        # idx_str = f'{idx:08d}'
-        # archive_fname = f'{idx_str[:5]}/img{idx_str}.png'
+
         archive_fname = f'{os.path.splitext(os.path.basename(image.fname))[0]}.png'
 
         # Apply crop and resize.
@@ -444,7 +451,6 @@ def encode(
     for idx, image in tqdm(enumerate(input_iter), total=num_files):
         img_tensor = torch.tensor(image.img).to('cuda').permute(2, 0, 1).unsqueeze(0)
         if xflip:
-            print(img_tensor.shape)
             img_tensor = img_tensor.flip(-1) # horiz flip -> we must do this offline as flipped latents don't produce flipped images
         mean_std = vae.encode_pixels(img_tensor)[0].cpu()
         archive_fname = f'{os.path.splitext(os.path.basename(image.fname))[0]}.npy'

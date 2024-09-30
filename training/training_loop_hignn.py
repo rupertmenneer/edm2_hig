@@ -62,17 +62,15 @@ def learning_rate_schedule(cur_nimg, batch_size, ref_lr=100e-4, ref_batches=70e3
         lr *= min(cur_nimg / (rampup_Mimg * 1e6), 1)
     return lr
 
-#----------------------------------------------------------------------------
-def worker_init_fn(worker_id):
-    worker_info = torch.utils.data.get_worker_info()
-    worker_info.dataset.hdf_file = None  # Reset the file handle for each worker
+
 #----------------------------------------------------------------------------
 # Main training loop.
 
 def training_loop(
     dataset_kwargs      = dict(class_name='hig_data.coco.COCOStuffGraphPrecomputedDataset',),
+    val_dataset_kwargs  = dict(class_name='hig_data.coco.COCOStuffGraphPrecomputedDataset',),
     encoder_kwargs      = dict(class_name='training.encoders.StabilityVAEEncoder'),
-    data_loader_kwargs  = dict(class_name='torch_geometric.loader.DataLoader', pin_memory=True, num_workers=4, prefetch_factor=4, worker_init_fn=worker_init_fn),
+    data_loader_kwargs  = dict(class_name='torch_geometric.loader.DataLoader', pin_memory=True, num_workers=4, prefetch_factor=4),
     network_kwargs      = dict(class_name='training.networks_edm2_hignn.Precond', label_dim=768),
     loss_kwargs         = dict(class_name='training.training_loop_hignn.EDM2Loss'),
     optimizer_kwargs    = dict(class_name='torch.optim.Adam', betas=(0.9, 0.99)),
@@ -111,7 +109,6 @@ def training_loop(
     formatted_date_time = now.strftime("%b_%d_hr_%H")
     ckpt_name = f"{preset_name}_{formatted_date_time}"
     if wandb_kwargs['mode'] != 'disabled' and dist.get_rank() == 0: # init wandb if not already
-        wandb.require("service")
         wandb.init(**wandb_kwargs, name=f"{preset_name}_bs_{batch_size}_seed_{seed}")
 
     # Validate batch size.
@@ -129,10 +126,9 @@ def training_loop(
 
     # Setup dataset, encoder, and network.
     dist.print0('Loading dataset...')
+    val_dataset_obj = dnnlib.util.construct_class_by_name(**val_dataset_kwargs)
+    misc.set_random_seed(seed)
     dataset_obj = dnnlib.util.construct_class_by_name(**dataset_kwargs)
-    val_kwargs = copy.deepcopy(dataset_kwargs)
-    val_kwargs['path'] = val_kwargs['val_path']
-    val_dataset_obj = dnnlib.util.construct_class_by_name(**val_kwargs)
     ref_graph = dataset_obj[0]
     ref_image = ref_graph.image
     dist.print0('Setting up encoder...')
@@ -141,8 +137,9 @@ def training_loop(
     dist.print0('Constructing network...')
 
     interface_kwargs = dict(img_resolution=ref_image.shape[-1], img_channels=ref_image.shape[1], gnn_metadata=ref_graph.metadata())
-    net = dnnlib.util.construct_class_by_name(**network_kwargs, **interface_kwargs)
 
+    misc.set_random_seed(seed)
+    net = dnnlib.util.construct_class_by_name(**network_kwargs, **interface_kwargs)
     net.train().to(device)
     inputs = [
             torch.zeros([1, net.img_channels, net.img_resolution, net.img_resolution], device=device),
@@ -179,17 +176,21 @@ def training_loop(
     # Main training loop.
     dataset_sampler = misc.InfiniteSampler(dataset=dataset_obj, rank=dist.get_rank(), num_replicas=dist.get_world_size(), seed=seed, start_idx=state.cur_nimg)
     dataset_iterator = iter(dnnlib.util.construct_class_by_name(dataset=dataset_obj, sampler=dataset_sampler, batch_size=batch_gpu, **data_loader_kwargs))
-    val_sampler = torch.utils.data.DistributedSampler(dataset=val_dataset_obj, rank=dist.get_rank(), num_replicas=dist.get_world_size(), seed=seed, shuffle=False,) # use standard sampler for val
-    val_dataloader = dnnlib.util.construct_class_by_name(dataset=val_dataset_obj, sampler=val_sampler, batch_size=batch_gpu, **data_loader_kwargs, drop_last=True,) # set drop last true
+
+    # dist.print0('Setting up Validation Dataloader')
+    val_dataset_sampler = torch.utils.data.DistributedSampler(dataset=val_dataset_obj, rank=dist.get_rank(), num_replicas=dist.get_world_size(), seed=seed, shuffle=False,) # use standard sampler for val
+    # val_dataset_sampler = misc.ValidationSampler(dataset=val_dataset_obj, rank=dist.get_rank(), num_replicas=dist.get_world_size(), seed=seed, start_idx=state.cur_nimg)
+    val_dataloader = dnnlib.util.construct_class_by_name(dataset=val_dataset_obj, batch_size=batch_gpu, sampler=val_dataset_sampler, **data_loader_kwargs, drop_last=True) # set drop last true
+    
     prev_status_nimg = state.cur_nimg
     cumulative_training_time = 0
     start_nimg = state.cur_nimg
     stats_jsonl = None
 
-    # create fixed logging batch
-    if dist.get_rank() == 0:
-        logging_batch = get_single_batch(dataset_obj, class_name=data_loader_kwargs['class_name'])
-        logging_batch_val = get_single_batch(val_dataset_obj, class_name=data_loader_kwargs['class_name'])
+
+    # create logging/validation batches/dls
+    logging_batch = get_single_batch(dataset_obj, class_name=data_loader_kwargs['class_name'])
+    logging_batch_val = get_single_batch(val_dataset_obj, class_name=data_loader_kwargs['class_name'])
 
     while True:
         done = (state.cur_nimg >= stop_at_nimg)
@@ -233,53 +234,44 @@ def training_loop(
             if dist.should_stop() or dist.should_suspend():
                 done = True
 
-        # Save validation stats vis
-        if wandb.run is not None and wandb_nimg is not None and (done or state.cur_nimg % wandb_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0):
-            dist.print0(f"Starting validation epoch")
+        # Validation 
+        misc.set_random_seed(seed)
+        if wandb_nimg is not None and (done or state.cur_nimg % wandb_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0) and state.cur_nimg != start_nimg:
+            # Calculate val loss
+            losses = misc.AverageMeter('Loss')
+            val_iter = iter(val_dataloader)
+            ddp.eval()
             with torch.no_grad():
-                # Do validation epoch - log to wandb
-                val_losses = []
-                for batch in val_dataloader:
-                    graph_batch = batch.to(device)
-                    image_latents = encoder.encode_latents(graph_batch.image.to(device))
-                    dist.print0(f"validation batch -> ", image_latents.shape)
-                    loss = loss_fn(net=ddp, images = image_latents, graph=graph_batch,)
-                    val_losses.append(torch.mean(loss).detach().cpu().numpy())
+                graph_batch = next(val_iter).to(device, non_blocking=True)
+                dist.print0(f"Validation batch -> ", image_latents.shape)
+                image_latents = encoder.encode_latents(graph_batch.image.to(device))
+                loss = loss_fn(net=ddp, images = image_latents, graph=graph_batch)
+                losses.update(torch.mean(loss).detach().item())
+            ddp.train()
+            losses.all_reduce()
+            if dist.get_rank() == 0 and wandb_kwargs['mode'] != 'disabled': # save val loss to wandb only
+                wandb.log({"val/loss": losses.avg, "nimg": state.cur_nimg})
+            del val_iter # save memory
+            # Sample and save to wandb
+            dist.print0(f"Starting sampling..")
+            if wandb_kwargs['mode'] != 'disabled': # save val loss to wandb only 
+                with torch.no_grad():
+                    for name, batch in zip(['Train', 'Validation'], [logging_batch, logging_batch_val]):            
+                        graph = copy.deepcopy(batch) # ensure deepcopy of logging batch each call
+                        b,_,h,w = graph.image.shape
+                        sample_shape = (b, net.unet.img_channels, h, w)
+                        noise = torch.randn(sample_shape, device=device)
+                        dist.print0(f"{name} Sampling with image shape {noise.shape}")
+                        sampled = edm_sampler(net=net, noise=noise, graph=graph) # sample images from noise and graph batch
 
-                val_loss_tensor = torch.tensor(np.mean(val_losses), device=device)
-                if dist.get_rank() == 0:
-                    wandb.log({"val/loss": val_loss_tensor.item(), "nimg": state.cur_nimg})
-
-                cur_time = time.time()
-                state.total_elapsed_time += cur_time - prev_status_time
-                dist.print0('Finished val, time:', f"{dnnlib.util.format_time(training_stats.report0('Timing/total_sec',  state.total_elapsed_time)):<12s}")
-
-        # Save wandb vis
-        if wandb.run is not None and wandb_nimg is not None and (done or state.cur_nimg % wandb_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0) and dist.get_rank() == 0:
-
-            # wandb logging rank 0 only
-            with torch.no_grad():
-                # sample images from training and validation
-                for name, batch in zip(['Train', 'Validation'], [logging_batch, logging_batch_val]):
-                    
-                    # Samples
-                    graph = copy.deepcopy(batch) # ensure deepcopy of logging batch each call
-                    noise = torch.randn((graph.image.shape[0], net.img_channels, net.img_resolution, net.img_resolution), device=device)
-                    dist.print0(f"{name} Sampling with image shape {noise.shape}")
-                    sampled = edm_sampler(net=ddp, gnet=ddp, noise=noise, graph=graph) # sample images from noise and graph batch
-
-                    # Create HIGNN embedding for logging
-                    zero_input = torch.zeros((graph.image.shape[0], network_kwargs.model_channels, net.img_resolution, net.img_resolution), device=device)
-                    init_gnn_emb, _ = net.unet.enc['32x32_block0'].hignn(zero_input, net.unet.graph_proj(graph.to(device)))
-                    init_gnn_emb = np.clip(init_gnn_emb[:, :3].cpu().detach().numpy().transpose(0,2,3,1), 0, 1) # clip for vis
-                    
-                    dist.print0(f"Logging samples to wandb..")
-                    logging_generate_sample_vis(graph, sampled, init_gnn_emb, title=name) # log images to wandb
-
-                cur_time = time.time()
-                state.total_elapsed_time += cur_time - prev_status_time
-                dist.print0('Finished wandb, time:', f"{dnnlib.util.format_time(training_stats.report0('Timing/total_sec',  state.total_elapsed_time)):<12s}")
-
+                        # Create HIGNN embedding for logging
+                        zero_input = torch.zeros((b, net.unet.model_channels,h,w), device=device)
+                        hignn_out, _ = net.unet.enc['32x32_block0'].hignn(zero_input, net.unet.graph_proj(graph.to(device)))
+                        hignn_out = np.clip(hignn_out[:, :3].cpu().detach().numpy().transpose(0,2,3,1), 0, 1) # clip for vis
+                        dist.print0(f"Logging samples to wandb..")
+                        if dist.get_rank() == 0: # save vis to rank 0 only
+                            logging_generate_sample_vis(graph, sampled, hignn_out, title=name) # log images to wandb
+            dist.print0(f"Validation Finished.")
 
         # Save network snapshot.
         if snapshot_nimg is not None and state.cur_nimg % snapshot_nimg == 0 and (state.cur_nimg != start_nimg or start_nimg == 0) and dist.get_rank() == 0:
@@ -306,13 +298,20 @@ def training_loop(
 
         # Evaluate loss and accumulate gradients.
         batch_start_time = time.time()
+
+        apply_cfg = False # if applying CFG must ensure consistency across ranks for graph gradients (e.g. they should all have conds or none)
+        if cfg_dropout != 0.0:
+            misc.set_random_seed(seed, state.cur_nimg)
+            apply_cfg = np.random.rand() < cfg_dropout
+
         misc.set_random_seed(seed, dist.get_rank(), state.cur_nimg)
         optimizer.zero_grad(set_to_none=True)
         for round_idx in range(num_accumulation_rounds):
             with misc.ddp_sync(ddp, (round_idx == num_accumulation_rounds - 1)):
                 graph_batch = next(dataset_iterator).to(device)
                 image_latents = encoder.encode_latents(graph_batch.image.to(device))
-                graph_batch = None if cfg_dropout != 0.0 and np.random.rand() < cfg_dropout else graph_batch
+                dist.print0(f'Train step {image_latents.shape}')
+                graph_batch = None if apply_cfg else graph_batch
                 labels = None if graph_batch is None else graph_batch.caption
                 loss = loss_fn(net=ddp, images = image_latents, graph=graph_batch, labels=labels)
                 training_stats.report('Loss/loss', loss)
@@ -340,6 +339,7 @@ def training_loop(
             ema.update(cur_nimg=state.cur_nimg, batch_size=batch_size)
         cumulative_training_time += time.time() - batch_start_time
 
+
 #----------------------------------------------------------------------------
 
 def get_single_batch(dataset, class_name, n=8):
@@ -348,3 +348,5 @@ def get_single_batch(dataset, class_name, n=8):
     batch = next(iter(data_loader)).clone().detach()
     return batch
 
+
+ 

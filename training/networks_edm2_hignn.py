@@ -225,6 +225,8 @@ class UNet(torch.nn.Module):
         **block_kwargs,                     # Arguments for Block.
     ):
         super().__init__()
+        self.model_channels = model_channels
+        self.img_channels = img_channels
         cblock = [model_channels * x for x in channel_mult]
         cnoise = model_channels * channel_mult_noise if channel_mult_noise is not None else cblock[0]
         cemb = model_channels * channel_mult_emb if channel_mult_emb is not None else max(cblock)

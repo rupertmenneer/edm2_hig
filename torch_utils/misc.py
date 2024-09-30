@@ -145,6 +145,35 @@ class InfiniteSampler(torch.utils.data.Sampler):
             idx += self.stride
 
 #----------------------------------------------------------------------------
+# Sampler for torch.utils.data.DataLoader that loops over the dataset once,
+# shuffling items if needed.
+
+class ValidationSampler(torch.utils.data.Sampler):
+    def __init__(self, dataset, rank=0, num_replicas=1, seed=0, start_idx=0):
+        assert len(dataset) > 0
+        assert num_replicas > 0
+        assert 0 <= rank < num_replicas
+        warnings.filterwarnings('ignore', '`data_source` argument is not used and will be removed')
+        super().__init__(dataset)
+        self.dataset_size = len(dataset)
+        self.start_idx = start_idx + rank
+        self.stride = num_replicas
+        self.seed = seed
+
+    def __iter__(self):
+        idx = self.start_idx
+        epoch = None
+        has_looped = False
+        while not has_looped:
+            if epoch != idx // self.dataset_size:
+                epoch = idx // self.dataset_size
+                order = np.arange(self.dataset_size)
+            yield int(order[idx % self.dataset_size])
+            idx += self.stride
+            if idx >= self.dataset_size:
+                has_looped = True
+
+#----------------------------------------------------------------------------
 # Utilities for operating with torch.nn.Module parameters and buffers.
 
 def params_and_buffers(module):
@@ -191,8 +220,10 @@ def check_ddp_consistency(module, ignore_regex=None):
         if tensor.is_floating_point():
             tensor = torch.nan_to_num(tensor)
         other = tensor.clone()
+       
         torch.distributed.broadcast(tensor=other, src=0)
         assert (tensor == other).all(), fullname
+    print('check_ddp_consistency exit')
 
 #----------------------------------------------------------------------------
 # Print summary table of module hierarchy.
@@ -275,3 +306,34 @@ def tile_images(x, w, h):
     return x.reshape(h, w, *x.shape[1:]).permute(2, 0, 3, 1, 4).reshape(x.shape[1], h * x.shape[2], w * x.shape[3])
 
 #----------------------------------------------------------------------------
+
+class AverageMeter(object):
+    """Computes and stores the average and current value"""
+    def __init__(self, name, fmt=':f',):
+        self.name = name
+        self.fmt = fmt
+        self.reset()
+
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count
+
+    def all_reduce(self):
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        elif torch.backends.mps.is_available():
+            device = torch.device("mps")
+        else:
+            device = torch.device("cpu")
+        total = torch.tensor([self.sum, self.count], dtype=torch.float32, device=device)
+        torch.distributed.all_reduce(total, torch.distributed.ReduceOp.SUM, async_op=False)
+        self.sum, self.count = total.tolist()
+        self.avg = self.sum / self.count
