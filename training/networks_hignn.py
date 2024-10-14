@@ -36,7 +36,7 @@ class HIGnnInterface(torch.nn.Module):
         metadata,
         gnn_channels,
         num_gnn_layers=2,
-        node_dropout=False,
+        node_dropout=True,
     ):
         super().__init__()
 
@@ -47,7 +47,7 @@ class HIGnnInterface(torch.nn.Module):
         gnn = MP_GNN(gnn_channels, num_gnn_layers, incoming_meta_paths_per_node)
         self.gnn = torch_geometric.nn.to_hetero(gnn, metadata, aggr="sum")
 
-        self.out_gain = torch.nn.Parameter(torch.ones([]))
+        self.out_gain = torch.nn.Parameter(torch.zeros([]))
 
         self.node_dropout = node_dropout
 
@@ -73,15 +73,16 @@ class HIGnnInterface(torch.nn.Module):
             graph[key].x = emb
         return graph
     
-    def apply_mp_scaling(self, graph, one_hot_labels=['class_node']):
+    def apply_mp_scaling(self, graph, one_hot_labels=['class_node', 'instance_node']):
         for key in one_hot_labels:
-            # graph[key].x = graph[key].x * np.sqrt(graph[key].x.shape[1]) # MP scaling for one hot cond nodes
-            graph[key].x = normalize(graph[key].x, dim=1) # apply normalisation to class nodes at start of network
+            if hasattr(graph, key): # check if key exists in graph
+                graph[key].x = normalize(graph[key].x, dim=1) # apply normalisation to class nodes at start of network
         return graph
     
     def apply_node_dropout(self, graph, conditioning_labels=['class_node', 'instance_node']):
         for key in conditioning_labels:
-            graph[key].x = node_dropout(graph[key].x) # randomly dropout conditioning nodes uniformly
+            if hasattr(graph, key): # check if key exists in graph
+                graph[key].x = node_dropout(graph[key].x) # randomly dropout conditioning nodes uniformly
         return graph
     
     def forward(self, x, graph):
@@ -125,6 +126,7 @@ class MP_GNN(torch.nn.Module):
             x = block(x) if isinstance(block, (MP_GeoLinear)) else heterogenous_apply_scaling(block(heterogenous_mp_silu(x), edge_index=edge_index, edge_attr=edge_attr), self.mp_meta_path_factors)
         return x
     
+
 #----------------------------------------------------------------------------
 # Normalize given tensor to unit magnitude with respect to the given
 # dimensions. Default = all dimensions except the first.
