@@ -94,7 +94,7 @@ def training_loop(
     preset_name          = None,     # Name of the preset for logging.
 
     device              = torch.device('cuda'),
-    cfg_dropout         = 0.2,
+    cfg_dropout         = 0.0,
 ):
     # Initialize.
     prev_status_time = time.time()
