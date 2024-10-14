@@ -127,7 +127,6 @@ def training_loop(
     # Setup dataset, encoder, and network.
     dist.print0('Loading dataset...')
     val_dataset_obj = dnnlib.util.construct_class_by_name(**val_dataset_kwargs)
-    misc.set_random_seed(seed)
     dataset_obj = dnnlib.util.construct_class_by_name(**dataset_kwargs)
     ref_graph = dataset_obj[0]
     ref_image = ref_graph.image
@@ -137,8 +136,6 @@ def training_loop(
     dist.print0('Constructing network...')
 
     interface_kwargs = dict(img_resolution=ref_image.shape[-1], img_channels=ref_image.shape[1], gnn_metadata=ref_graph.metadata())
-
-    misc.set_random_seed(seed)
     net = dnnlib.util.construct_class_by_name(**network_kwargs, **interface_kwargs)
     net.train().to(device)
     inputs = [
@@ -268,7 +265,7 @@ def training_loop(
                         zero_input = torch.zeros((b, net.unet.model_channels,h,w), device=device)
                         hignn_out, _ = net.unet.enc['32x32_block0'].hignn(zero_input, net.unet.graph_proj(graph.to(device)))
                         hignn_out = np.clip(hignn_out[:, :3].cpu().detach().numpy().transpose(0,2,3,1), 0, 1) # clip for vis
-                        dist.print0(f"Logging samples to wandb..")
+                        dist.print0(f"Logging {name} samples to wandb..")
                         if dist.get_rank() == 0: # save vis to rank 0 only
                             logging_generate_sample_vis(graph, sampled, hignn_out, title=name) # log images to wandb
             dist.print0(f"Validation Finished.")
@@ -310,7 +307,6 @@ def training_loop(
             with misc.ddp_sync(ddp, (round_idx == num_accumulation_rounds - 1)):
                 graph_batch = next(dataset_iterator).to(device)
                 image_latents = encoder.encode_latents(graph_batch.image.to(device))
-                dist.print0(f'Train step {image_latents.shape}')
                 graph_batch = None if apply_cfg else graph_batch
                 labels = None if graph_batch is None else graph_batch.caption
                 loss = loss_fn(net=ddp, images = image_latents, graph=graph_batch, labels=labels)
