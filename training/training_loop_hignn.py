@@ -234,15 +234,15 @@ def training_loop(
 
         # Validation 
         misc.set_random_seed(seed)
-        if wandb_nimg is not None and (done or state.cur_nimg % wandb_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0) and state.cur_nimg != start_nimg:
+        if wandb_nimg is not None and (done or state.cur_nimg % wandb_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0):
             # Calculate val loss
             losses = misc.AverageMeter('Loss')
             val_iter = iter(val_dataloader)
             ddp.eval()
             with torch.no_grad():
                 graph_batch = next(val_iter).to(device, non_blocking=True)
-                dist.print0(f"Validation batch -> ", image_latents.shape)
                 image_latents = encoder.encode_latents(graph_batch.image.to(device))
+                dist.print0(f"Validation batch -> ", image_latents.shape)
                 loss = loss_fn(net=ddp, images = image_latents, graph=graph_batch)
                 losses.update(torch.mean(loss).detach().item())
             ddp.train()
@@ -264,7 +264,7 @@ def training_loop(
 
                         # Create HIGNN embedding for logging
                         zero_input = torch.zeros((b, net.unet.model_channels,h,w), device=device)
-                        hignn_out, _ = net.unet.enc['32x32_block0'].hignn(zero_input, net.unet.graph_proj(graph.to(device)))
+                        hignn_out, _ = net.unet.enc['32x32_block0'].hignn(zero_input, graph=graph.to(device))
                         hignn_out = np.clip(hignn_out[:, :3].cpu().detach().numpy().transpose(0,2,3,1), 0, 1) # clip for vis
                         dist.print0(f"Logging {name} samples to wandb..")
                         if dist.get_rank() == 0: # save vis to rank 0 only
