@@ -27,7 +27,7 @@ os.environ["WANDB_DISABLE_GPU"] = "true"
 os.environ['WANDB_CACHE_DIR'] = '/home/rfsm2/rds/hpc-work/edm2_hig/wandb'
 
 from hig_data.visualisation import logging_generate_sample_vis
-from hig_data.utils import random_subgraph_collate
+from hig_data.utils import HIGCollator
 from generate_images import edm_sampler
 
 #----------------------------------------------------------------------------
@@ -71,7 +71,7 @@ def training_loop(
     dataset_kwargs      = dict(class_name='hig_data.coco.COCOStuffGraphPrecomputedDataset',),
     val_dataset_kwargs  = dict(class_name='hig_data.coco.COCOStuffGraphPrecomputedDataset',),
     encoder_kwargs      = dict(class_name='training.encoders.StabilityVAEEncoder'),
-    data_loader_kwargs  = dict(class_name='torch_geometric.loader.DataLoader', pin_memory=True, num_workers=4, prefetch_factor=4),
+    data_loader_kwargs  = dict(class_name='hig_data.utils.DataLoader', pin_memory=True, num_workers=4, prefetch_factor=4),
     network_kwargs      = dict(class_name='training.networks_edm2_hignn.Precond', label_dim=768),
     loss_kwargs         = dict(class_name='training.training_loop_hignn.EDM2Loss'),
     optimizer_kwargs    = dict(class_name='torch.optim.Adam', betas=(0.9, 0.99)),
@@ -174,8 +174,8 @@ def training_loop(
 
     # Main training loop.
     dataset_sampler = misc.InfiniteSampler(dataset=dataset_obj, rank=dist.get_rank(), num_replicas=dist.get_world_size(), seed=seed, start_idx=state.cur_nimg)
-    collate_fn = random_subgraph_collate if node_subsample else None # randomly dropout conditioning nodes uniformly
-    dataset_iterator = iter(dnnlib.util.construct_class_by_name(dataset=dataset_obj, sampler=dataset_sampler, batch_size=batch_gpu, collate_fn=collate_fn, **data_loader_kwargs))
+    # randomly dropout conditioning nodes uniformly
+    dataset_iterator = iter(dnnlib.util.construct_class_by_name(dataset=dataset_obj, sampler=dataset_sampler, batch_size=batch_gpu, subsample=node_subsample, **data_loader_kwargs))
 
     val_dataset_sampler = torch.utils.data.DistributedSampler(dataset=val_dataset_obj, rank=dist.get_rank(), num_replicas=dist.get_world_size(), seed=seed, shuffle=False,) # use standard sampler for val
     val_dataloader = dnnlib.util.construct_class_by_name(dataset=val_dataset_obj, batch_size=batch_gpu, sampler=val_dataset_sampler, **data_loader_kwargs, drop_last=True) # set drop last true
@@ -187,7 +187,7 @@ def training_loop(
 
 
     # create logging/validation batches/dls
-    logging_batch = get_single_batch(dataset_obj, class_name=data_loader_kwargs['class_name'])
+    logging_batch = get_single_batch(dataset_obj, class_name=data_loader_kwargs['class_name'], subsample=node_subsample)
     logging_batch_val = get_single_batch(val_dataset_obj, class_name=data_loader_kwargs['class_name'])
 
     while True:
@@ -339,9 +339,9 @@ def training_loop(
 
 #----------------------------------------------------------------------------
 
-def get_single_batch(dataset, class_name, n=8):
+def get_single_batch(dataset, class_name, n=8, subsample=False):
     # create dl, get single batch, detach and return
-    data_loader = iter(dnnlib.util.construct_class_by_name(class_name=class_name, dataset=dataset, batch_size=n, pin_memory=True, num_workers=1, prefetch_factor=1))
+    data_loader = iter(dnnlib.util.construct_class_by_name(class_name=class_name, dataset=dataset, batch_size=n, pin_memory=True, num_workers=1, prefetch_factor=1, subsample=subsample))
     batch = next(iter(data_loader)).clone().detach()
     return batch
 
