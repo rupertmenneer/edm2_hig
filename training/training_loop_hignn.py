@@ -96,7 +96,7 @@ def training_loop(
 
     device              = torch.device('cuda'),
     cfg_dropout         = 0.0,
-    node_subsample      = True,
+    node_subsample      = False,
 ):
     # Initialize.
     prev_status_time = time.time()

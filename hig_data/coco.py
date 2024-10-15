@@ -354,9 +354,9 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
             # data['caption_node'].x = data.caption if data.caption.shape[0] != 0 else torch.empty((0, 768))
 
             # ---- Edges
-            data = self.connect_instance_and_class(data)
+            
             data['class_node', 'class_edge', 'class_node'].edge_index = torch.from_numpy(graph_group['class_edge'][:]).to(torch.long) if graph_group['class_edge'][:].shape[1] != 0 else torch.empty((2, 0), dtype=torch.long)
-
+            data = self.connect_instance_and_class(data)
             # data = self.connect_with_clip_similarity(data)
             # data['instance_node', 'instance_edge', 'instance_node'].edge_index = torch.from_numpy(graph_group['instance_edge'][:]).to(torch.long) if graph_group['instance_edge'][:].shape[1] != 0 else torch.empty((2, 0), dtype=torch.long)
 
@@ -411,7 +411,7 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
         class_indices, instance_indices = match_matrix.nonzero(as_tuple=True)
         # Stack the indices into an edge index and assign it
         edge_index = torch.stack([instance_indices, class_indices], dim=0)
-        data['instance_node', 'instance_to_classs', 'class_node'].edge_index = edge_index
+        data['instance_node', 'instance_to_class', 'class_node'].edge_index = edge_index
         return data
 
 
