@@ -27,6 +27,7 @@ os.environ["WANDB_DISABLE_GPU"] = "true"
 os.environ['WANDB_CACHE_DIR'] = '/home/rfsm2/rds/hpc-work/edm2_hig/wandb'
 
 from hig_data.visualisation import logging_generate_sample_vis
+from hig_data.utils import random_subgraph_collate
 from generate_images import edm_sampler
 
 #----------------------------------------------------------------------------
@@ -95,6 +96,7 @@ def training_loop(
 
     device              = torch.device('cuda'),
     cfg_dropout         = 0.0,
+    node_subsample      = True,
 ):
     # Initialize.
     prev_status_time = time.time()
@@ -172,11 +174,10 @@ def training_loop(
 
     # Main training loop.
     dataset_sampler = misc.InfiniteSampler(dataset=dataset_obj, rank=dist.get_rank(), num_replicas=dist.get_world_size(), seed=seed, start_idx=state.cur_nimg)
-    dataset_iterator = iter(dnnlib.util.construct_class_by_name(dataset=dataset_obj, sampler=dataset_sampler, batch_size=batch_gpu, **data_loader_kwargs))
+    collate_fn = random_subgraph_collate if node_subsample else None # randomly dropout conditioning nodes uniformly
+    dataset_iterator = iter(dnnlib.util.construct_class_by_name(dataset=dataset_obj, sampler=dataset_sampler, batch_size=batch_gpu, collate_fn=collate_fn, **data_loader_kwargs))
 
-    # dist.print0('Setting up Validation Dataloader')
     val_dataset_sampler = torch.utils.data.DistributedSampler(dataset=val_dataset_obj, rank=dist.get_rank(), num_replicas=dist.get_world_size(), seed=seed, shuffle=False,) # use standard sampler for val
-    # val_dataset_sampler = misc.ValidationSampler(dataset=val_dataset_obj, rank=dist.get_rank(), num_replicas=dist.get_world_size(), seed=seed, start_idx=state.cur_nimg)
     val_dataloader = dnnlib.util.construct_class_by_name(dataset=val_dataset_obj, batch_size=batch_gpu, sampler=val_dataset_sampler, **data_loader_kwargs, drop_last=True) # set drop last true
     
     prev_status_nimg = state.cur_nimg

@@ -36,7 +36,6 @@ class HIGnnInterface(torch.nn.Module):
         metadata,
         gnn_channels,
         num_gnn_layers=2,
-        node_dropout=True,
     ):
         super().__init__()
 
@@ -48,8 +47,6 @@ class HIGnnInterface(torch.nn.Module):
         self.gnn = torch_geometric.nn.to_hetero(gnn, metadata, aggr="sum")
 
         self.out_gain = torch.nn.Parameter(torch.zeros([]))
-
-        self.node_dropout = node_dropout
 
         
     def update_graph_image_nodes(self, x, graph):
@@ -79,22 +76,13 @@ class HIGnnInterface(torch.nn.Module):
                 graph[key].x = normalize(graph[key].x, dim=1) # apply normalisation to class nodes at start of network
         return graph
     
-    def apply_node_dropout(self, graph, conditioning_labels=['class_node', 'instance_node']):
-        for key in conditioning_labels:
-            if hasattr(graph, key): # check if key exists in graph
-                graph[key].x = node_dropout(graph[key].x) # randomly dropout conditioning nodes uniformly
-        return graph
-    
+
     def forward(self, x, graph):
 
         assert x.shape[0] == graph.image.shape[0], "Batch size mismatch between input and graph"
 
         graph = self.update_graph_image_nodes(x, graph) # update and resize image nodes on graph with current feature map
         graph = self.apply_mp_scaling(graph) # apply MP scaling to one hot encoded nodes
-
-        # apply node and edge drop outs
-        if self.training and self.node_dropout:
-            graph = self.apply_node_dropout(graph) # randomly dropout conditioning nodes uniformly
 
         y = self.gnn(graph.x_dict, graph.edge_index_dict, graph.edge_attr_dict) # pass dual graph through GNN
 
@@ -150,17 +138,6 @@ def heterogenous_mp_silu(x):
 def heterogenous_apply_scaling(x, scalings):
     return {key: x[key]*scalings[key] for key in x.keys()} if isinstance(x, torch.Tensor) else x
 
-def heterogenous_dropout(x, dropout):
-    return {key: torch.nn.functional.dropout(x[key], p=dropout) for key in x.keys()} if isinstance(x, torch.Tensor) else x
-
-def node_dropout(x):
-    num_nodes = x.size(0)
-    num_to_drop = torch.randint(1, num_nodes)
-    mask = torch.ones(num_nodes, dtype=torch.bool)
-    drop_indices = torch.randperm(num_nodes)[:num_to_drop]
-    mask[drop_indices] = False
-    x = x * mask.unsqueeze(1).float()
-    return x
 
 #----------------------------------------------------------------------------
 # Magnitude-preserving Graph SAGE Conv

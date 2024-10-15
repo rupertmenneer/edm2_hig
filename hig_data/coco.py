@@ -9,6 +9,7 @@ import numpy as np
 from torch_geometric.data import HeteroData, Dataset as GeoDataset
 from training.dataset import Dataset
 import h5py
+from torch_geometric.data import Data, Batch
 
 try:
     import pyspng
@@ -355,7 +356,7 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
             # ---- Edges
             data = self.connect_instance_and_class(data)
             data['class_node', 'class_edge', 'class_node'].edge_index = torch.from_numpy(graph_group['class_edge'][:]).to(torch.long) if graph_group['class_edge'][:].shape[1] != 0 else torch.empty((2, 0), dtype=torch.long)
-            
+
             # data = self.connect_with_clip_similarity(data)
             # data['instance_node', 'instance_edge', 'instance_node'].edge_index = torch.from_numpy(graph_group['instance_edge'][:]).to(torch.long) if graph_group['instance_edge'][:].shape[1] != 0 else torch.empty((2, 0), dtype=torch.long)
 
@@ -525,4 +526,3 @@ def bbox_to_linear_indices(bbox, image_size, is_flipped):
     linear_indices = y_indices * W + x_indices
 
     return linear_indices
-
