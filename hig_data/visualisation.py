@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import dnnlib
 import numpy as np
+import h5py
 
 # handles batch or single image, n sets number to display
 def plot_array_images(images, n=8, save_path=None):
@@ -165,9 +166,10 @@ def visualise_het_graph_on_image(
 
     ax.imshow(images, alpha=image_alpha)
 
-    # if hasattr(hetero_data, 'mask_path'):
-        # mask = np.load(hetero_data.mask_path, allow_pickle=True) 
-        # ax.imshow(mask.squeeze(), alpha=0.45)
+    with h5py.File(hetero_data.root, 'r') as hdf_file:
+        group = hdf_file[hetero_data.fname] # open from hdf file
+        mask = np.array(group['mask'][:]) 
+        ax.imshow(mask.squeeze(), alpha=0.45)
     
     # Create a NetworkX graph
     G = nx.Graph()

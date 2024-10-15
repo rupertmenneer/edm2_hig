@@ -336,7 +336,8 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
             # Image + Caption
             data.image = torch.from_numpy(group['image'][:]).to(torch.float32)
             data.caption = torch.from_numpy(group['caption'][:]).to(torch.float32)
-            data.mask_path = fname # save fname for loading mask for val purposes later
+            data.fname = fname # save fname for loading mask for val purposes later
+            data.root = self._path # save root for loading mask for val purposes later
 
             # Graph
             graph_group = group['graph']
