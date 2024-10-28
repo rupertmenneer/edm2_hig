@@ -351,15 +351,12 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
             data['instance_node'].x = torch.from_numpy(graph_group['instance_node'][:]).to(torch.float32)
             data['instance_node'].label = torch.from_numpy(graph_group['instance_label'][:]).to(torch.float32)
 
-            # ---- Image Caption
-            # data['caption_node'].x = data.caption if data.caption.shape[0] != 0 else torch.empty((0, 768))
-
             # ---- Edges
             
             data['class_node', 'class_edge', 'class_node'].edge_index = torch.from_numpy(graph_group['class_edge'][:]).to(torch.long) if graph_group['class_edge'][:].shape[1] != 0 else torch.empty((2, 0), dtype=torch.long)
             data = self.connect_instance_and_class(data)
             # data = self.connect_with_clip_similarity(data)
-            # data['instance_node', 'instance_edge', 'instance_node'].edge_index = torch.from_numpy(graph_group['instance_edge'][:]).to(torch.long) if graph_group['instance_edge'][:].shape[1] != 0 else torch.empty((2, 0), dtype=torch.long)
+            data['instance_node', 'instance_edge', 'instance_node'].edge_index = torch.from_numpy(graph_group['instance_edge'][:]).to(torch.long) if graph_group['instance_edge'][:].shape[1] != 0 else torch.empty((2, 0), dtype=torch.long)
 
             # class to image
             data['class_node', 'class_to_image', 'image_node'].edge_index = torch.from_numpy(graph_group['class_to_image'][:]).to(torch.long) if graph_group['class_to_image'][:].shape[1] != 0 else torch.empty((2, 0), dtype=torch.long)

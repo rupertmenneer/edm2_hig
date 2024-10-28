@@ -27,7 +27,6 @@ os.environ["WANDB_DISABLE_GPU"] = "true"
 os.environ['WANDB_CACHE_DIR'] = '/home/rfsm2/rds/hpc-work/edm2_hig/wandb'
 
 from hig_data.visualisation import logging_generate_sample_vis
-from hig_data.utils import HIGCollator
 from generate_images import edm_sampler
 
 #----------------------------------------------------------------------------
@@ -72,9 +71,9 @@ def training_loop(
     val_dataset_kwargs  = dict(class_name='hig_data.coco.COCOStuffGraphPrecomputedDataset',),
     encoder_kwargs      = dict(class_name='training.encoders.StabilityVAEEncoder'),
     data_loader_kwargs  = dict(class_name='hig_data.utils.DataLoader', pin_memory=True, num_workers=4, prefetch_factor=4),
-    network_kwargs      = dict(class_name='training.networks_edm2_hignn.Precond', label_dim=768),
+    network_kwargs      = dict(class_name='training.networks_edm2_hignn.Precond'),
     loss_kwargs         = dict(class_name='training.training_loop_hignn.EDM2Loss'),
-    optimizer_kwargs    = dict(class_name='torch.optim.Adam', betas=(0.9, 0.99)),
+    optimizer_kwargs    = dict(class_name='torch.optim.AdamW', betas=(0.9, 0.99)),
     lr_kwargs           = dict(func_name='training.training_loop_hignn.learning_rate_schedule'),
     ema_kwargs          = dict(class_name='training.phema.PowerFunctionEMA'),
     wandb_kwargs        = dict(project='COCO_edm2_hig', mode='online',), 
@@ -92,11 +91,12 @@ def training_loop(
     loss_scaling        = 1,        # Loss scaling factor for reducing FP16 under/overflows.
     force_finite        = True,     # Get rid of NaN/Inf gradients before feeding them to the optimizer.
     cudnn_benchmark     = True,     # Enable torch.backends.cudnn.benchmark?
-    preset_name          = None,     # Name of the preset for logging.
+    preset_name          = None,    # Name of the preset for logging.
 
     device              = torch.device('cuda'),
-    cfg_dropout         = 0.0,
-    node_subsample      = True,
+    cfg_dropout         = 0.0,      # dropout chance of having 0 conditions (CFG)
+    node_subsample      = True,     # uniform dropout of cond nodes
+    cond                = True,     # conditional embeddings e.g. caption embs
 ):
     # Initialize.
     prev_status_time = time.time()
@@ -111,7 +111,8 @@ def training_loop(
     formatted_date_time = now.strftime("%b_%d_hr_%H")
     ckpt_name = f"{preset_name}_{formatted_date_time}"
     if wandb_kwargs['mode'] != 'disabled' and dist.get_rank() == 0: # init wandb if not already
-        wandb.init(**wandb_kwargs, name=f"{preset_name}_bs_{batch_size}_seed_{seed}")
+        wandb.init(**wandb_kwargs, name=f"{preset_name}_bs_{batch_size}_seed_{seed}", resume="allow")
+        dist.print0(f"wandb init with ID {wandb_kwargs.get('id', None)}")
 
     # Validate batch size.
     batch_gpu_total = batch_size // dist.get_world_size()
@@ -137,6 +138,9 @@ def training_loop(
     ref_image = encoder.encode_latents(torch.as_tensor(ref_image).to(device))
     dist.print0('Constructing network...')
 
+    # Network
+    network_kwargs['label_dim'] = 768 if cond else 0 # add emd dim if conditional
+    dist.print0(f"Label dim set to {network_kwargs['label_dim']}")
     interface_kwargs = dict(img_resolution=ref_image.shape[-1], img_channels=ref_image.shape[1], gnn_metadata=ref_graph.metadata())
     net = dnnlib.util.construct_class_by_name(**network_kwargs, **interface_kwargs)
     net.train().to(device)
@@ -188,9 +192,11 @@ def training_loop(
 
 
     # create logging/validation batches/dls
+    dist.print0(f"Single batch logging")
     logging_batch = get_single_batch(dataset_obj, class_name=data_loader_kwargs['class_name'], subsample=node_subsample)
     logging_batch_val = get_single_batch(val_dataset_obj, class_name=data_loader_kwargs['class_name'])
 
+    dist.print0(f"Training loop starting...")
     while True:
         done = (state.cur_nimg >= stop_at_nimg)
 
@@ -340,10 +346,21 @@ def training_loop(
 
 #----------------------------------------------------------------------------
 
+@torch.no_grad()
 def get_single_batch(dataset, class_name, n=8, subsample=False):
-    # create dl, get single batch, detach and return
-    data_loader = iter(dnnlib.util.construct_class_by_name(class_name=class_name, dataset=dataset, batch_size=n, pin_memory=True, num_workers=1, prefetch_factor=1, subsample=subsample))
-    batch = next(iter(data_loader)).clone().detach()
+    
+    # create data loader, get a single batch, detach tensors, and return
+    data_loader = dnnlib.util.construct_class_by_name(
+        class_name=class_name,
+        dataset=dataset,
+        batch_size=n,
+        pin_memory=True,
+        subsample=subsample
+    )
+    
+    # Retrieve a single batch, detaching the tensors after loading
+    batch = next(iter(data_loader))
+        
     return batch
 
 

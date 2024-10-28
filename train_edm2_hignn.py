@@ -33,7 +33,7 @@ config_presets = {
     'edm2-img64-l':     dnnlib.EasyDict(duration=1024<<20, batch=2048, channels=320, lr=0.0080, decay=35000, dropout=0.10, P_mean=-0.8, P_std=1.6),
     'edm2-img64-xl':    dnnlib.EasyDict(duration=640<<20,  batch=2048, channels=384, lr=0.0070, decay=35000, dropout=0.10, P_mean=-0.8, P_std=1.6),
     'edm2-coco256-s':   dnnlib.EasyDict(duration=2048<<20, batch=2048, channels=192, lr=0.0100, decay=70000, dropout=0.00, P_mean=-0.4, P_std=1.0),
-    'edm2-coco256-xs':  dnnlib.EasyDict(duration=2048<<20, batch=2048, channels=128, lr=0.0120, decay=70000, dropout=0.10, P_mean=-0.4, P_std=1.0),
+    'edm2-coco256-xs':  dnnlib.EasyDict(duration=2048<<20, batch=2048, channels=128, lr=0.0120, decay=70000, dropout=0.15, P_mean=-0.4, P_std=1.0),
 }
 
 #----------------------------------------------------------------------------
@@ -75,7 +75,8 @@ def setup_training_config(preset='edm2-img512-s',
     c.network_kwargs = dnnlib.EasyDict(class_name='training.networks_edm2_hignn.Precond', model_channels=opts.channels, dropout=opts.dropout)
     c.loss_kwargs = dnnlib.EasyDict(class_name='training.training_loop_hignn.EDM2Loss', P_mean=opts.P_mean, P_std=opts.P_std)
     c.lr_kwargs = dnnlib.EasyDict(func_name='training.training_loop_hignn.learning_rate_schedule', ref_lr=opts.lr, ref_batches=opts.decay)
-
+    c.wandb_kwargs = dnnlib.EasyDict(project='COCO_edm2_hig', mode='online', id=opts.wandb_id)
+    
     # Performance-related options.
     c.batch_gpu = opts.get('batch_gpu', 0) or None
     c.network_kwargs.use_fp16 = opts.get('fp16', True)
@@ -89,6 +90,8 @@ def setup_training_config(preset='edm2-img512-s',
     c.wandb_nimg = opts.get('wandb_vis', 0) or None
     c.seed = opts.get('seed', 0)
     c.preset_name = preset
+    c.cond = opts.get('cond', True)
+
     return c
 
 #----------------------------------------------------------------------------
@@ -173,6 +176,7 @@ def parse_nimg(s):
 @click.option('--snapshot',         help='Interval of network snapshots', metavar='NIMG',       type=parse_nimg, default='8Mi', show_default=True)
 @click.option('--checkpoint',       help='Interval of training checkpoints', metavar='NIMG',    type=parse_nimg, default='16Mi', show_default=True)
 @click.option('--wandb_vis',        help='Interval of wandb vis', metavar='NIMG',               type=parse_nimg, default='4Mi', show_default=True)
+@click.option('--wandb_id',         help='idx of wandb run to resume', metavar='NIMG',          type=str, required=False, default=None)
 @click.option('--seed',             help='Random seed', metavar='INT',                          type=int, default=0, show_default=True)
 @click.option('-n', '--dry-run',    help='Print training options and exit',                     is_flag=True)
 

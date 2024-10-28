@@ -8,9 +8,9 @@ def random_subgraph_collate(graph: HeteroData, subsampling_keys=['class_node', '
 
     for key in graph.node_types:
         num_nodes = graph[key].num_nodes
-        if key in subsampling_keys and num_nodes > 1:
+        if key in subsampling_keys and num_nodes >= 3:
             # Ensure at least one node is selected (no zero-length batches)
-            num_to_sample = torch.randint(1, num_nodes, (1,)).item()
+            num_to_sample = torch.randint(2, num_nodes, (1,)).item()
             sample_indices = torch.randperm(num_nodes)[:num_to_sample]
             node_dict[key] = sample_indices
         else:  # Include all nodes for keys not in subsampling_keys
