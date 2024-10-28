@@ -5,14 +5,15 @@ from torch_geometric.data import HeteroData
 
 def random_subgraph_collate(graph: HeteroData, subsampling_keys=['class_node', 'instance_node']):
     node_dict = {}
-    
+
     for key in graph.node_types:
         num_nodes = graph[key].num_nodes
-        if key in subsampling_keys:
+        if key in subsampling_keys and num_nodes > 1:
+            # Ensure at least one node is selected (no zero-length batches)
             num_to_sample = torch.randint(1, num_nodes, (1,)).item()
             sample_indices = torch.randperm(num_nodes)[:num_to_sample]
             node_dict[key] = sample_indices
-        else: # Include all nodes for keys not in subsampling_keys
+        else:  # Include all nodes for keys not in subsampling_keys
             node_dict[key] = torch.arange(num_nodes)
 
     return graph.subgraph(node_dict)
@@ -25,9 +26,10 @@ class HIGCollator(torch_geometric.loader.dataloader.Collater):
         self.subsampling_keys = subsampling_keys if subsampling_keys is not None else ['class_node', 'instance_node']
     
     def __call__(self, batch):
-        batched_graph = super().__call__(batch) # call base class Collater to get the batched graph
-        if isinstance(batched_graph, torch_geometric.data.Batch) and self.subsample: # if the batched graph is a Batch object and subsample is True, then subsample the graph
-            return random_subgraph_collate(batched_graph, self.subsampling_keys)
+        # Apply subsampling before collating into a batch
+        if self.subsample:
+            batch = [random_subgraph_collate(graph, self.subsampling_keys) for graph in batch]
+        batched_graph = super().__call__(batch)  # Call base class Collater to get the batched graph
         return batched_graph
 
 class DataLoader(torch.utils.data.DataLoader):

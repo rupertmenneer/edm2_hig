@@ -96,7 +96,7 @@ def training_loop(
 
     device              = torch.device('cuda'),
     cfg_dropout         = 0.0,
-    node_subsample      = False,
+    node_subsample      = True,
 ):
     # Initialize.
     prev_status_time = time.time()
@@ -175,6 +175,7 @@ def training_loop(
     # Main training loop.
     dataset_sampler = misc.InfiniteSampler(dataset=dataset_obj, rank=dist.get_rank(), num_replicas=dist.get_world_size(), seed=seed, start_idx=state.cur_nimg)
     # randomly dropout conditioning nodes uniformly
+    dist.print0(f'Node subsampling: {node_subsample}')
     dataset_iterator = iter(dnnlib.util.construct_class_by_name(dataset=dataset_obj, sampler=dataset_sampler, batch_size=batch_gpu, subsample=node_subsample, **data_loader_kwargs))
 
     val_dataset_sampler = torch.utils.data.DistributedSampler(dataset=val_dataset_obj, rank=dist.get_rank(), num_replicas=dist.get_world_size(), seed=seed, shuffle=False,) # use standard sampler for val

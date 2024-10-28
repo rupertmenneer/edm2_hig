@@ -129,7 +129,7 @@ class CheckpointIO:
         if verbose:
             print0('done')
 
-    def load_latest(self, run_dir, pattern=r'training-state-(\d+).pt', verbose=True):
+    def load_latest(self, run_dir, pattern=r'edm2.*training-state-(\d+).pt', verbose=True):
         fnames = [entry.name for entry in os.scandir(run_dir) if entry.is_file() and re.fullmatch(pattern, entry.name)]
         if len(fnames) == 0:
             return None
