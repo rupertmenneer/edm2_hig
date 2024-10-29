@@ -73,7 +73,7 @@ def training_loop(
     data_loader_kwargs  = dict(class_name='hig_data.utils.DataLoader', pin_memory=True, num_workers=4, prefetch_factor=4),
     network_kwargs      = dict(class_name='training.networks_edm2_hignn.Precond'),
     loss_kwargs         = dict(class_name='training.training_loop_hignn.EDM2Loss'),
-    optimizer_kwargs    = dict(class_name='torch.optim.AdamW', betas=(0.9, 0.99)),
+    optimizer_kwargs    = dict(class_name='torch.optim.Adam', betas=(0.9, 0.99)),
     lr_kwargs           = dict(func_name='training.training_loop_hignn.learning_rate_schedule'),
     ema_kwargs          = dict(class_name='training.phema.PowerFunctionEMA'),
     wandb_kwargs        = dict(project='COCO_edm2_hig', mode='online',), 

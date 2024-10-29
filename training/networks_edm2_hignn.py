@@ -193,6 +193,11 @@ class Block(torch.nn.Module):
             w = torch.einsum('nhcq,nhck->nhqk', q, k / np.sqrt(q.shape[2])).softmax(dim=3)
             y = torch.einsum('nhqk,nhck->nhcq', w, v)
             y = self.attn_proj(y.reshape(*x.shape))
+
+            # MODIFICATION: apply drop out to attention mechanism as well to avoid overfitting between qk
+            if self.training and self.dropout != 0:
+                y = torch.nn.functional.dropout(y, p=self.dropout)
+
             x = mp_sum(x, y, t=self.attn_balance)
 
         # Clip activations.
@@ -222,6 +227,7 @@ class UNet(torch.nn.Module):
         gnn_metadata        = None,         # MODIFICATION: Metadata for dual gnn
         label_balance       = 0.5,          # Balance between noise embedding (0) and class embedding (1).
         concat_balance      = 0.5,          # Balance between skip connections (0) and main path (1).
+        skip_dropout        = 0.2,          # MODIFICATION: apply drop out to skip connections to avoid memorisation
         **block_kwargs,                     # Arguments for Block.
     ):
         super().__init__()
@@ -234,6 +240,7 @@ class UNet(torch.nn.Module):
         self.concat_balance = concat_balance
         self.out_gain = torch.nn.Parameter(torch.zeros([]))
         self.gnn_metadata = gnn_metadata
+        self.skip_dropout = skip_dropout
 
         # Embedding.
         self.emb_fourier = MPFourier(cnoise)
@@ -291,7 +298,10 @@ class UNet(torch.nn.Module):
         # Decoder.
         for name, block in self.dec.items():
             if 'block' in name:
-                x = mp_cat(x, skips.pop(), t=self.concat_balance)
+                x_skip = skips.pop()
+                if self.training and self.skip_dropout != 0:
+                    x_skip = torch.nn.functional.dropout(x_skip, p=self.skip_dropout)
+                x = mp_cat(x, x_skip, t=self.concat_balance)
             x = block(x, emb)
         x = self.out_conv(x, gain=self.out_gain)
         return x
