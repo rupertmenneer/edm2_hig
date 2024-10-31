@@ -64,6 +64,7 @@ def setup_training_config(preset='edm2-img512-s',
         raise click.ClickException(f'--data: {err}')
 
     # Encoder.
+   
     if dataset_channels == 3:
         c.encoder_kwargs = dnnlib.EasyDict(class_name='training.encoders.StandardRGBEncoder')
     elif dataset_channels == 8:

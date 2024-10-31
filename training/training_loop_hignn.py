@@ -154,6 +154,7 @@ def training_loop(
     inputs = [
             torch.zeros([1, net.img_channels, net.img_resolution, net.img_resolution], device=device),
             torch.ones([1,], device=device),
+            torch.ones([1,], device=device),
             ref_graph.to(device),
             torch.zeros([1, net.label_dim], device=device),
         ]
@@ -174,6 +175,7 @@ def training_loop(
     # Load previous checkpoint and decide how long to train.
     checkpoint = dist.CheckpointIO(state=state, net=net, loss_fn=loss_fn, optimizer=optimizer, ema=ema)
     checkpoint.load_latest(run_dir)
+    dist.print0(f"Dropout values for loaded checkpoint {net.unet.enc['32x32_block0'].dropout}")
     stop_at_nimg = total_nimg
     if slice_nimg is not None:
         granularity = checkpoint_nimg if checkpoint_nimg is not None else snapshot_nimg if snapshot_nimg is not None else batch_size
@@ -256,8 +258,9 @@ def training_loop(
             with torch.no_grad():
                 graph_batch = next(val_iter).to(device, non_blocking=True)
                 image_latents = encoder.encode_latents(graph_batch.image.to(device))
+                labels = None if graph_batch is None else graph_batch.caption
                 dist.print0(f"Validation batch -> ", image_latents.shape)
-                loss = loss_fn(net=ddp, images = image_latents, graph=graph_batch)
+                loss = loss_fn(net=ddp, images = image_latents, graph=graph_batch, labels=labels)
                 losses.update(torch.mean(loss).detach().item())
             ddp.train()
             losses.all_reduce()
@@ -274,7 +277,8 @@ def training_loop(
                         sample_shape = (b, net.unet.img_channels, h, w)
                         noise = torch.randn(sample_shape, device=device)
                         dist.print0(f"{name} Sampling with image shape {noise.shape}")
-                        sampled = edm_sampler(net=net, noise=noise, graph=graph) # sample images from noise and graph batch
+                        labels = None if graph_batch is None else graph_batch.caption
+                        sampled = edm_sampler(net=net, noise=noise, graph=graph, labels=labels) # sample images from noise and graph batch
 
                         # Create HIGNN embedding for logging
                         zero_input = torch.zeros((b, net.unet.model_channels,h,w), device=device)
