@@ -101,7 +101,7 @@ def training_loop(
     preset_name         = None,    # Name of the preset for logging.
 
     device              = torch.device('cuda'),
-    cfg_dropout         = 0.2,      # dropout chance of having 0 conditions (CFG)
+    cfg_dropout         = 0.1,      # dropout chance of having 0 conditions (CFG)
     node_subsample      = True,     # uniform dropout of cond nodes
     cond                = True,     # conditional embeddings e.g. caption embs
 ):

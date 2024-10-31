@@ -63,7 +63,7 @@ config_presets = {
 # extended to support classifier-free guidance.
 
 def edm_sampler(
-    net, noise, graph, gnet=None,
+    net, noise, graph, labels=None, gnet=None,
     num_steps=64, sigma_min=0.002, sigma_max=80, rho=7, guidance=1,
     S_churn=0, S_min=0, S_max=float('inf'), S_noise=1, cond_mean=-0.4, cond_std_inference=0.2,
     dtype=torch.float32, randn_like=torch.randn_like,
