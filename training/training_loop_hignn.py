@@ -35,10 +35,12 @@ from generate_images import edm_sampler
 
 @persistence.persistent_class
 class EDM2Loss:
-    def __init__(self, P_mean=-0.4, P_std=1.0, sigma_data=0.5):
+    def __init__(self, P_mean=-0.4, P_std=1.0, sigma_data=0.5, cond_mean=-0.4, cond_std=1.0,):
         self.P_mean = P_mean
         self.P_std = P_std
         self.sigma_data = sigma_data
+        self.cond_mean = cond_mean
+        self.cond_std = cond_std
 
     def __call__(self, net, images, graph=None, labels=None):
         
@@ -46,7 +48,12 @@ class EDM2Loss:
         sigma = (rnd_normal * self.P_std + self.P_mean).exp()
         weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
         noise = torch.randn_like(images) * sigma
-        denoised, logvar = net(images + noise, sigma=sigma, graph=graph, class_labels=labels, return_logvar=True)
+
+        # MODIFICATION: cond noise
+        rnd_normal = torch.randn([images.shape[0], 1, 1, 1], device=images.device)
+        cond_sigma = (rnd_normal * self.cond_mean + self.cond_std).exp()
+
+        denoised, logvar = net(images + noise, sigma=sigma, cond_sigma=cond_sigma, graph=graph, class_labels=labels, return_logvar=True)
         loss = (weight / logvar.exp()) * ((denoised - images) ** 2) + logvar
         return loss
 
@@ -91,10 +98,10 @@ def training_loop(
     loss_scaling        = 1,        # Loss scaling factor for reducing FP16 under/overflows.
     force_finite        = True,     # Get rid of NaN/Inf gradients before feeding them to the optimizer.
     cudnn_benchmark     = True,     # Enable torch.backends.cudnn.benchmark?
-    preset_name          = None,    # Name of the preset for logging.
+    preset_name         = None,    # Name of the preset for logging.
 
     device              = torch.device('cuda'),
-    cfg_dropout         = 0.0,      # dropout chance of having 0 conditions (CFG)
+    cfg_dropout         = 0.2,      # dropout chance of having 0 conditions (CFG)
     node_subsample      = True,     # uniform dropout of cond nodes
     cond                = True,     # conditional embeddings e.g. caption embs
 ):
