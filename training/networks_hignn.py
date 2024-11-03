@@ -46,8 +46,6 @@ class HIGnnInterface(torch.nn.Module):
         gnn = MP_GNN(gnn_channels, num_gnn_layers, incoming_meta_paths_per_node)
         self.gnn = torch_geometric.nn.to_hetero(gnn, metadata, aggr="sum")
 
-        self.out_gain = torch.nn.Parameter(torch.zeros([]))
-
         
     def update_graph_image_nodes(self, x, graph):
         _,c,h,w = x.shape
@@ -90,7 +88,7 @@ class HIGnnInterface(torch.nn.Module):
         
         out = self.extract_image_nodes(graph, x.shape) # extract and resize image nodes back to image
 
-        out = normalize(out, dim=1) * self.out_gain # pixel norm
+        out = normalize(out, dim=1) # pix norm out feats
 
         return out, graph
 

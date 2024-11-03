@@ -65,12 +65,12 @@ config_presets = {
 def edm_sampler(
     net, noise, graph, gnet=None,
     num_steps=64, sigma_min=0.002, sigma_max=80, rho=7, guidance=1,
-    S_churn=0, S_min=0, S_max=float('inf'), S_noise=1, cond_mean=-0.8, cond_std=0.2,
+    S_churn=0, S_min=0, S_max=float('inf'), S_noise=1,
     dtype=torch.float32, randn_like=torch.randn_like,
 ):
     # Guided denoiser.
-    def denoise(x, t, t_cond):
-        Dx = net(x, sigma=t, cond_sigma=t_cond.to(dtype), graph=graph).to(dtype)
+    def denoise(x, t):
+        Dx = net(x, sigma=t, graph=graph).to(dtype)
         if guidance == 1:
             return Dx
         ref_Dx = gnet(x, t).to(dtype)
@@ -95,17 +95,13 @@ def edm_sampler(
             t_hat = t_cur
             x_hat = x_cur
 
-        # cond Noise
-        rnd_normal = torch.randn([x_hat.shape[0], 1, 1, 1], device=x_hat.device)
-        cond_sigma = (rnd_normal * cond_std + cond_mean).exp()
-
         # Euler step.
-        d_cur = (x_hat - denoise(x_hat, t_hat, t_cond=cond_sigma)) / t_hat
+        d_cur = (x_hat - denoise(x_hat, t_hat,)) / t_hat
         x_next = x_hat + (t_next - t_hat) * d_cur
 
         # Apply 2nd order correction.
         if i < num_steps - 1:
-            d_prime = (x_next - denoise(x_next, t_next, t_cond=cond_sigma)) / t_next
+            d_prime = (x_next - denoise(x_next, t_next,)) / t_next
             x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
 
     return x_next

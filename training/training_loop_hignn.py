@@ -49,11 +49,7 @@ class EDM2Loss:
         weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
         noise = torch.randn_like(images) * sigma
 
-        # MODIFICATION: cond noise
-        cond_rnd_normal = torch.randn([images.shape[0], 1, 1, 1], device=images.device)
-        cond_sigma = (cond_rnd_normal * self.cond_std + self.cond_mean).exp()
-
-        denoised, logvar = net(images + noise, sigma=sigma, cond_sigma=cond_sigma, graph=graph, return_logvar=True)
+        denoised, logvar = net(images + noise, sigma=sigma, graph=graph, return_logvar=True)
         loss = (weight / logvar.exp()) * ((denoised - images) ** 2) + logvar
         return loss
 
@@ -76,7 +72,7 @@ def learning_rate_schedule(cur_nimg, batch_size, ref_lr=100e-4, ref_batches=70e3
 def training_loop(
     dataset_kwargs      = dict(class_name='hig_data.coco.COCOStuffGraphPrecomputedDataset',),
     val_dataset_kwargs  = dict(class_name='hig_data.coco.COCOStuffGraphPrecomputedDataset',),
-    encoder_kwargs      = dict(class_name='training.encoders.StabilityVAEEncoder'),
+    encoder_kwargs      = dict(class_name='training.encoders.StabilityVAEEncoder', precomputed_latents = False),
     data_loader_kwargs  = dict(class_name='hig_data.utils.DataLoader', pin_memory=True, num_workers=4, prefetch_factor=4),
     network_kwargs      = dict(class_name='training.networks_edm2_hignn.Precond'),
     loss_kwargs         = dict(class_name='training.training_loop_hignn.EDM2Loss'),
@@ -290,6 +286,7 @@ def training_loop(
                         dist.print0(f"Logging {name} samples to wandb..")
                         if dist.get_rank() == 0: # save vis to rank 0 only
                             logging_generate_sample_vis(graph, sampled, hignn_out, title=name) # log images to wandb
+
                 dist.print0(f"Validation Finished.")
 
         # Save network snapshot.
