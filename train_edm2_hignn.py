@@ -34,7 +34,7 @@ config_presets = {
     'edm2-img64-xl':    dnnlib.EasyDict(duration=640<<20,  batch=2048, channels=384, lr=0.0070, decay=35000, dropout=0.10, P_mean=-0.8, P_std=1.6),
     'edm2-coco256-s':   dnnlib.EasyDict(duration=2048<<20, batch=2048, channels=192, lr=0.0100, decay=70000, dropout=0.00, P_mean=-0.4, P_std=1.0),
     'edm2-coco256-xs':  dnnlib.EasyDict(duration=2048<<20, batch=2048, channels=128, lr=0.0120, decay=70000, dropout=0.15, P_mean=-0.4, P_std=1.0),
-    'edm2-coco256-xs2':  dnnlib.EasyDict(duration=2048<<20, batch=256, channels=128, lr=0.0065, decay=70000, dropout=0.20, P_mean=-0.4, P_std=1.0),
+    'edm2-coco256-s2':  dnnlib.EasyDict(duration=2048<<20, batch=512, channels=192, lr=0.0065, decay=70000, dropout=0.20, P_mean=-0.4, P_std=1.0),
 }
 
 #----------------------------------------------------------------------------
@@ -47,6 +47,7 @@ def setup_training_config(preset='edm2-img512-s',
     c = dnnlib.EasyDict()
     
     # Preset.
+    
     if preset not in config_presets:
         raise click.ClickException(f'Invalid configuration preset "{preset}"')
     for key, value in config_presets[preset].items():
@@ -64,7 +65,6 @@ def setup_training_config(preset='edm2-img512-s',
         raise click.ClickException(f'--data: {err}')
 
     # Encoder.
-   
     if dataset_channels == 3:
         c.encoder_kwargs = dnnlib.EasyDict(class_name='training.encoders.StandardRGBEncoder')
     elif dataset_channels == 8:

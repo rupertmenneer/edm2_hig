@@ -182,12 +182,12 @@ class Block(torch.nn.Module):
         apply_hignn = graph is not None and self.hignn is not None
         if apply_hignn:
             hig_out, graph = self.hignn(x, graph) # apply gnn
-            noise = torch.randn_like(hig_out) * cond_sigma # add cond noise
-            noisy_cond = hig_out + noise
-            cond_noise = self.emb_linear(cond_emb, gain=self.emb_gain_cond) + 1
-            noisy_cond = mp_silu(noisy_cond * cond_noise.unsqueeze(2).unsqueeze(3).to(y.dtype)) # condition on cond noise level
 
-            x = mp_sum(x.to(x.dtype), noisy_cond.to(x.dtype), t=self.graph_balance) # add back to main branch
+            gnn_noise = torch.randn_like(hig_out, device=x.device).to(x.dtype) * cond_sigma # add cond noise
+            gnn_c = self.emb_linear_cond(cond_emb, gain=self.emb_gain_cond) + 1 # condition noisy GNN output with cond time
+            gnn_noisy_out = mp_silu((hig_out + gnn_noise) * gnn_c.unsqueeze(2).unsqueeze(3).to(y.dtype)) # condition on cond noise level
+
+            x = mp_sum(x.to(x.dtype), gnn_noisy_out.to(x.dtype), t=self.graph_balance) # add back to main branch
 
         # Self-attention.
         # Note: torch.nn.functional.scaled_dot_product_attention() could be used here,
@@ -229,7 +229,6 @@ class UNet(torch.nn.Module):
         gnn_metadata        = None,         # MODIFICATION: Metadata for dual gnn
         label_balance       = 0.5,          # Balance between noise embedding (0) and class embedding (1).
         concat_balance      = 0.5,          # Balance between skip connections (0) and main path (1).
-        skip_dropout        = 0.2,          # MODIFICATION: apply drop out to skip connections to avoid memorisation
         **block_kwargs,                     # Arguments for Block.
     ):
         super().__init__()
@@ -242,7 +241,6 @@ class UNet(torch.nn.Module):
         self.concat_balance = concat_balance
         self.out_gain = torch.nn.Parameter(torch.zeros([]))
         self.gnn_metadata = gnn_metadata
-        self.skip_dropout = skip_dropout
 
         # Embedding.
         self.emb_fourier = MPFourier(cnoise)
@@ -284,20 +282,21 @@ class UNet(torch.nn.Module):
                 self.dec[f'{res}x{res}_block{idx}'] = Block(cin, cout, cemb, flavor='dec', attention=(res in attn_resolutions), **block_kwargs)
         self.out_conv = MPConv(cout, img_channels, kernel=[3,3])
 
-    def forward(self, x, noise_labels, noise_cond, graph, class_labels):
+    def forward(self, x, noise_labels, cond_sigma, graph, class_labels):
         # Embedding.
         emb = self.emb_noise(self.emb_fourier(noise_labels))
-        # MODIFICATION: cond noise
-        cond_emb = self.emb_noise_cond(self.emb_fourier_cond(noise_cond.flatten().log() / 4))
         if self.emb_label is not None:
             emb = mp_sum(emb, self.emb_label(class_labels), t=self.label_balance)
         emb = mp_silu(emb)
+
+        # MODIFICATION: cond noise
+        cond_emb = self.emb_noise_cond(self.emb_fourier_cond(cond_sigma.flatten().log() / 4))
 
         # Encoder.
         x = torch.cat([x, torch.ones_like(x[:, :1])], dim=1)
         skips = []
         for name, block in self.enc.items():
-            x = block(x) if 'conv' in name else block(x, emb=emb, cond_sigma=noise_cond, cond_emb=cond_emb, graph=graph) # MODIFICATION: pass graph to encoder blocks
+            x = block(x) if 'conv' in name else block(x, emb=emb, cond_sigma=cond_sigma, cond_emb=cond_emb, graph=graph) # MODIFICATION: pass graph to encoder blocks
             if isinstance(x, tuple): # MODIFICATION: unpack graph if hignn is present
                 x, graph = x
             skips.append(x)
@@ -305,10 +304,7 @@ class UNet(torch.nn.Module):
         # Decoder.
         for name, block in self.dec.items():
             if 'block' in name:
-                x_skip = skips.pop()
-                if self.training and self.skip_dropout != 0:
-                    x_skip = torch.nn.functional.dropout(x_skip, p=self.skip_dropout)
-                x = mp_cat(x, x_skip, t=self.concat_balance)
+                x = mp_cat(x, skips.pop(), t=self.concat_balance)
             x = block(x, emb)
         x = self.out_conv(x, gain=self.out_gain)
         return x
@@ -343,12 +339,19 @@ class Precond(torch.nn.Module):
         self.logvar_fourier = MPFourier(logvar_channels)
         self.logvar_linear = MPConv(logvar_channels, 1, kernel=[])
 
-    def forward(self, x, sigma, cond_sigma=None, graph=None, class_labels=None, force_fp32=False, return_logvar=False, **unet_kwargs):
+    def forward(self, x, sigma, cond_sigma=None, graph=None, force_fp32=False, return_logvar=False, **unet_kwargs):
         x = x.to(torch.float32)
         sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1)
-        class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
+        cond_sigma = cond_sigma.to(torch.float32).reshape(-1, 1, 1, 1) if cond_sigma is not None else None
+        
         dtype = torch.float16 if (self.use_fp16 and not force_fp32 and x.device.type == 'cuda') else torch.float32
-        graph = graph.clone().to(x.device) if graph is not None else graph # cast graph to device
+
+        graph = graph.clone().to(x.device) if graph is not None else graph # cast graph to device (and clone to avoid in place errors during sampling)
+
+        # turn caption to class labels input
+        caption = None if graph is None or not hasattr(graph, 'caption') else graph.caption.to(x.device)
+        class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if caption is None else caption.to(torch.float32).reshape(-1, self.label_dim).clone().to(x.device)
+
 
         # Preconditioning weights.
         c_skip = self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2)
@@ -358,7 +361,7 @@ class Precond(torch.nn.Module):
 
         # Run the model.
         x_in = (c_in * x).to(dtype)
-        F_x = self.unet(x_in, noise_labels=c_noise, noise_cond=cond_sigma, graph=graph, class_labels=class_labels, **unet_kwargs)
+        F_x = self.unet(x_in, noise_labels=c_noise, cond_sigma=cond_sigma, graph=graph, class_labels=class_labels, **unet_kwargs)
         D_x = c_skip * x + c_out * F_x.to(torch.float32)
 
         # Estimate uncertainty if requested.

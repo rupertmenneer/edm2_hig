@@ -42,7 +42,7 @@ class EDM2Loss:
         self.cond_mean = cond_mean
         self.cond_std = cond_std
 
-    def __call__(self, net, images, graph=None, labels=None):
+    def __call__(self, net, images, graph=None):
         
         rnd_normal = torch.randn([images.shape[0], 1, 1, 1], device=images.device)
         sigma = (rnd_normal * self.P_std + self.P_mean).exp()
@@ -50,10 +50,10 @@ class EDM2Loss:
         noise = torch.randn_like(images) * sigma
 
         # MODIFICATION: cond noise
-        rnd_normal = torch.randn([images.shape[0], 1, 1, 1], device=images.device)
-        cond_sigma = (rnd_normal * self.cond_mean + self.cond_std).exp()
+        cond_rnd_normal = torch.randn([images.shape[0], 1, 1, 1], device=images.device)
+        cond_sigma = (cond_rnd_normal * self.cond_std + self.cond_mean).exp()
 
-        denoised, logvar = net(images + noise, sigma=sigma, cond_sigma=cond_sigma, graph=graph, class_labels=labels, return_logvar=True)
+        denoised, logvar = net(images + noise, sigma=sigma, cond_sigma=cond_sigma, graph=graph, return_logvar=True)
         loss = (weight / logvar.exp()) * ((denoised - images) ** 2) + logvar
         return loss
 
@@ -101,7 +101,7 @@ def training_loop(
     preset_name         = None,    # Name of the preset for logging.
 
     device              = torch.device('cuda'),
-    cfg_dropout         = 0.1,      # dropout chance of having 0 conditions (CFG)
+    cfg_dropout         = 0.0,      # dropout chance of having 0 conditions (CFG)
     node_subsample      = True,     # uniform dropout of cond nodes
     cond                = True,     # conditional embeddings e.g. caption embs
 ):
@@ -112,6 +112,7 @@ def training_loop(
     torch.backends.cudnn.allow_tf32 = False
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False    
+    torch.autograd.set_detect_anomaly(True)
     
     # Get current date and time
     now = datetime.now()
@@ -156,7 +157,7 @@ def training_loop(
             torch.ones([1,], device=device),
             torch.ones([1,], device=device),
             ref_graph.to(device),
-            torch.zeros([1, net.label_dim], device=device),
+            # torch.zeros([1, net.label_dim], device=device),
         ]
     # Print network summary.
     if dist.get_rank() == 0:
@@ -175,7 +176,7 @@ def training_loop(
     # Load previous checkpoint and decide how long to train.
     checkpoint = dist.CheckpointIO(state=state, net=net, loss_fn=loss_fn, optimizer=optimizer, ema=ema)
     checkpoint.load_latest(run_dir)
-    dist.print0(f"Dropout values for loaded checkpoint {net.unet.enc['32x32_block0'].dropout}")
+
     stop_at_nimg = total_nimg
     if slice_nimg is not None:
         granularity = checkpoint_nimg if checkpoint_nimg is not None else snapshot_nimg if snapshot_nimg is not None else batch_size
@@ -249,36 +250,38 @@ def training_loop(
                 done = True
 
         # Validation 
-        misc.set_random_seed(seed)
-        if wandb_nimg is not None and (done or state.cur_nimg % wandb_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0):
-            # Calculate val loss
-            losses = misc.AverageMeter('Loss')
-            val_iter = iter(val_dataloader)
-            ddp.eval()
-            with torch.no_grad():
-                graph_batch = next(val_iter).to(device, non_blocking=True)
-                image_latents = encoder.encode_latents(graph_batch.image.to(device))
-                labels = None if graph_batch is None else graph_batch.caption
-                dist.print0(f"Validation batch -> ", image_latents.shape)
-                loss = loss_fn(net=ddp, images = image_latents, graph=graph_batch, labels=labels)
-                losses.update(torch.mean(loss).detach().item())
-            ddp.train()
-            losses.all_reduce()
-            if dist.get_rank() == 0 and wandb_kwargs['mode'] != 'disabled': # save val loss to wandb only
-                wandb.log({"val/loss": losses.avg, "nimg": state.cur_nimg})
-            del val_iter # save memory
-            # Sample and save to wandb
-            dist.print0(f"Starting sampling..")
-            if wandb_kwargs['mode'] != 'disabled': # save val loss to wandb only 
-                with torch.no_grad():
+        with torch.no_grad():
+
+            misc.set_random_seed(seed)
+            # Validation Losses
+            if wandb_nimg is not None and (done or state.cur_nimg % wandb_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0):
+                # Calculate val loss
+                losses = misc.AverageMeter('Loss')
+                val_iter = iter(val_dataloader)
+                ddp.eval()
+
+                for graph_batch in val_iter:
+                    image_latents = encoder.encode_latents(graph_batch.image.to(device))
+                    dist.print0(f"Validation batch -> ", image_latents.shape)
+                    loss = loss_fn(net=ddp, images = image_latents, graph=graph_batch)
+                    losses.update(torch.mean(loss).detach().item())
+
+                ddp.train()
+                losses.all_reduce()
+                if dist.get_rank() == 0 and wandb_kwargs['mode'] != 'disabled': # save val loss to wandb only
+                    wandb.log({"val/loss": losses.avg, "nimg": state.cur_nimg})
+
+                # Samples -> Sample visualisation save to wandb
+                dist.print0(f"Starting sampling..")
+                if wandb_kwargs['mode'] != 'disabled': # save val loss to wandb only 
                     for name, batch in zip(['Train', 'Validation'], [logging_batch, logging_batch_val]):            
                         graph = copy.deepcopy(batch) # ensure deepcopy of logging batch each call
                         b,_,h,w = graph.image.shape
                         sample_shape = (b, net.unet.img_channels, h, w)
                         noise = torch.randn(sample_shape, device=device)
                         dist.print0(f"{name} Sampling with image shape {noise.shape}")
-                        labels = None if graph_batch is None else graph_batch.caption
-                        sampled = edm_sampler(net=net, noise=noise, graph=graph, labels=labels) # sample images from noise and graph batch
+                        
+                        sampled = edm_sampler(net=net, noise=noise, graph=graph) # sample images from noise and graph batch
 
                         # Create HIGNN embedding for logging
                         zero_input = torch.zeros((b, net.unet.model_channels,h,w), device=device)
@@ -287,7 +290,7 @@ def training_loop(
                         dist.print0(f"Logging {name} samples to wandb..")
                         if dist.get_rank() == 0: # save vis to rank 0 only
                             logging_generate_sample_vis(graph, sampled, hignn_out, title=name) # log images to wandb
-            dist.print0(f"Validation Finished.")
+                dist.print0(f"Validation Finished.")
 
         # Save network snapshot.
         if snapshot_nimg is not None and state.cur_nimg % snapshot_nimg == 0 and (state.cur_nimg != start_nimg or start_nimg == 0) and dist.get_rank() == 0:
@@ -327,8 +330,8 @@ def training_loop(
                 graph_batch = next(dataset_iterator).to(device)
                 image_latents = encoder.encode_latents(graph_batch.image.to(device))
                 graph_batch = None if apply_cfg else graph_batch
-                labels = None if graph_batch is None else graph_batch.caption
-                loss = loss_fn(net=ddp, images = image_latents, graph=graph_batch, labels=labels)
+
+                loss = loss_fn(net=ddp, images = image_latents, graph=graph_batch)
                 training_stats.report('Loss/loss', loss)
                 if dist.get_rank() == 0 and wandb.run is not None:
                         wandb.log({"train/loss": torch.mean(loss).detach(), "nimg": state.cur_nimg})
