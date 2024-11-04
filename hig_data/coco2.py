@@ -27,21 +27,21 @@ Models COCO with a HIG graph.
 class CocoStuffGraphDataset(Dataset):
 
     def __init__(self,
-        image_path,                   # Path to zip for images.
-        mask_path,                    # Path to zip for semantic masks.
-        labels_path,                  # Path to json for bounding boxes.
-        captions_path,                # Path to json for caption latents.
-        vocab_path,                   # Path to json for vocab latents.
+        path,                           # Json file containing paths for this dataset
         latent_compression = 8,       # Compression factor for latent images.
         resolution = 512,             # Ensure specific resolution, None = anything goes.
+        augmentation = False,         # whether to apply augmentation
         **kwargs,                     # Additional arguments for the GeoDataset base class.
     ) -> None:
 
-        self._image_path = image_path
-        self._mask_path = mask_path
-        self._labels_path = labels_path
-        self._captions_path = captions_path
-        self._vocab_path = vocab_path 
+        with open(path, 'r') as f:
+            paths = json.load(f) 
+
+        self._image_path = paths['image_path']
+        self._mask_path = paths['mask_path']
+        self._labels_path = paths['labels_path']
+        self._captions_path = paths['captions_path']
+        self._vocab_path = paths['vocab_path'] 
         
         self.file_names = self.get_filelist_from_paths()
         self.latent_compression = latent_compression
@@ -54,31 +54,36 @@ class CocoStuffGraphDataset(Dataset):
         # image node positions (same for every img)
         self.grid_size = resolution//latent_compression # grid size for image patches 
         self.num_image_nodes = self.grid_size * self.grid_size
+
         self.image_patch_positions = get_image_patch_positions(image_size=self.grid_size, patch_size=latent_compression)
 
-        self.augmentation = HIGAugmentation(size=resolution)
+        self.augmentation = None
+        if augmentation:
+            self.augmentation = HIGAugmentation(size=resolution)
             
+    def get_filelist_from_dir(self, path):
+        return {os.path.relpath(os.path.join(root, fname), start=path) for root, _dirs, files in os.walk(path) for fname in files}
         
     def get_filelist_from_paths(self,):
         
-        assert self._file_ext(self._image_path) == '.zip', 'Image path must point to a zip'
-        assert self._file_ext(self._mask_path) == '.zip', 'Mask path must point to a zip'
+        assert os.path.isdir(self._image_path), 'Image path must point to a dir'
+        assert os.path.isdir(self._mask_path), 'Mask path must point to a dir'
         assert self._file_ext(self._labels_path) == '.json', 'Label path must point to a json'
 
         supported_ext = {'.jpg', '.jpeg', '.png', '.npy'}
         unspported_prefix = ['.', '__', '__MACOSX/']
         self._files = {}  # Store file references
-        primary_list = sorted(fname for fname in set(self._get_zipfile(self._image_path).namelist()) if self._file_ext(fname) in supported_ext and not any(fname.startswith(prefix) for prefix in unspported_prefix))
-        file_sets = [primary_list, self._get_zipfile(self._mask_path).namelist(), self._get_jsonfile(self._labels_path).keys(), self._get_zipfile(self._captions_path).namelist()]
+        primary_list = sorted(fname for fname in set(self.get_filelist_from_dir(self._image_path)) if self._file_ext(fname) in supported_ext and not any(fname.startswith(prefix) for prefix in unspported_prefix))
+        file_sets = [primary_list,  self.get_filelist_from_dir(self._mask_path), self._get_jsonfile(self._labels_path).keys(), self.get_filelist_from_dir(self._captions_path)]
         complete_sets = self._extract_complete_suffix_set_files(file_sets)
 
         print('Found {} complete datapoint in {}'.format(len(complete_sets), self._image_path))
         
         self._all_fnames = {
-            'image': sorted(f for f in set(self._get_zipfile(self._image_path).namelist()) if self._file_name(f) in complete_sets),
-            'mask': sorted(f for f in set(self._get_zipfile(self._mask_path).namelist()) if self._file_name(f) in complete_sets),
+            'image': sorted(f for f in set(self.get_filelist_from_dir(self._image_path)) if self._file_name(f) in complete_sets),
+            'mask': sorted(f for f in set(self.get_filelist_from_dir(self._mask_path)) if self._file_name(f) in complete_sets),
             'label': sorted(f for f in set(self._get_jsonfile(self._labels_path).keys()) if self._file_name(f) in complete_sets),
-            'caption': sorted(f for f in set(self._get_zipfile(self._captions_path).namelist()) if self._file_name(f) in complete_sets),
+            'caption': sorted(f for f in set(self.get_filelist_from_dir(self._captions_path)) if self._file_name(f) in complete_sets),
             'vocab': sorted(set(self._get_jsonfile(self._vocab_path).keys())),
         }
         assert len(self._all_fnames['image']) == len(self._all_fnames['mask']) == len(self._all_fnames['label']) == len(self._all_fnames['caption']), 'Number of files must match'
@@ -118,7 +123,7 @@ class CocoStuffGraphDataset(Dataset):
     def _open_file(self, fname, path):
         if self._file_ext(path) == '.zip':
             return self._get_zipfile(path).open(fname, 'r')
-        return None
+        return open(os.path.join(path, fname), 'rb')
 
     def close(self):
         try:
@@ -160,7 +165,7 @@ class CocoStuffGraphDataset(Dataset):
         raw_idx = self._raw_idx[idx]
         fname = self._all_fnames['caption'][raw_idx]
         with self._open_file(fname, self._captions_path) as f:
-            caption = np.load(f)
+            caption = torch.from_numpy(np.load(f))
         return caption
 
     # construct a hig from raw data item 
@@ -169,7 +174,8 @@ class CocoStuffGraphDataset(Dataset):
         data = RelaxedHeteroData() # create hetero data object for hig
         img, mask = self._load_images(idx)
         label = self._load_label(idx)
-        img, mask, label = self.augmentation(img, mask, label)
+        if self.augmentation: # apply augmentation if available
+            img, mask, label = self.augmentation(img, mask, label)
         caption = self._load_caption(idx)
 
         data.image = img[np.newaxis,...] # add image to data object
@@ -240,7 +246,8 @@ class CocoStuffGraphDataset(Dataset):
     
     def _create_class_to_image_edges(self, data, mask):
         edges = []
-
+        if isinstance(mask, np.ndarray):
+            mask = torch.from_numpy(mask)
         resized_mask = torch.nn.functional.interpolate(mask.unsqueeze(0), size=(self.grid_size, self.grid_size), mode='nearest').squeeze() # resize mask to match compression
         class_node_pos = []
         for class_node_idx, class_label in enumerate(data['class_node'].label):

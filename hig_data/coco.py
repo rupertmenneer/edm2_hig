@@ -264,6 +264,19 @@ class CocoStuffGraphDataset(Dataset):
         data['class_node'].pos = np.stack(class_node_pos, axis=0) if class_node_pos else np.empty((0, 2), dtype=np.float32) # add class node positions for visualisation
         return data
     
+    def connect_instance_and_class(self, data):
+        # Get the class labels and instance labels
+        class_labels = data['class_node'].label
+        instance_labels = data['instance_node'].label
+        # Find where class labels match instance labels using broadcasting
+        # This will create a matrix where each (i, j) is True if instance_label[j] == class_label[i]
+        match_matrix = (class_labels[:, None] == instance_labels[None, :])
+        # Get the indices where the labels match
+        class_indices, instance_indices = match_matrix.nonzero(as_tuple=True)
+        # Stack the indices into an edge index and assign it
+        edge_index = torch.stack([instance_indices, class_indices], dim=0)
+        data['instance_node', 'instance_to_class', 'class_node'].edge_index = edge_index
+        return data
 
 # ----------------------------------------------------------------------------
 

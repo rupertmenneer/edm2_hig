@@ -70,16 +70,16 @@ def learning_rate_schedule(cur_nimg, batch_size, ref_lr=100e-4, ref_batches=70e3
 # Main training loop.
 
 def training_loop(
-    dataset_kwargs      = dict(class_name='hig_data.coco.COCOStuffGraphPrecomputedDataset',),
-    val_dataset_kwargs  = dict(class_name='hig_data.coco.COCOStuffGraphPrecomputedDataset',),
-    encoder_kwargs      = dict(class_name='training.encoders.StabilityVAEEncoder', precomputed_latents = False),
+    dataset_kwargs      = dict(class_name='hig_data.coco2.CocoStuffGraphDataset',),
+    val_dataset_kwargs  = dict(class_name='hig_data.coco2.CocoStuffGraphDataset',),
+    encoder_kwargs      = dict(class_name='training.encoders.StabilityVAEEncoder'),
     data_loader_kwargs  = dict(class_name='hig_data.utils.DataLoader', pin_memory=True, num_workers=4, prefetch_factor=4),
     network_kwargs      = dict(class_name='training.networks_edm2_hignn.Precond'),
     loss_kwargs         = dict(class_name='training.training_loop_hignn.EDM2Loss'),
     optimizer_kwargs    = dict(class_name='torch.optim.Adam', betas=(0.9, 0.99)),
     lr_kwargs           = dict(func_name='training.training_loop_hignn.learning_rate_schedule'),
     ema_kwargs          = dict(class_name='training.phema.PowerFunctionEMA'),
-    wandb_kwargs        = dict(project='COCO_edm2_hig', mode='online',), 
+    wandb_kwargs        = dict(project='COCO_edm2_hig', mode='disabled',), 
 
     run_dir             = '.',      # Output directory.
     seed                = 0,        # Global random seed.
@@ -108,7 +108,7 @@ def training_loop(
     torch.backends.cudnn.allow_tf32 = False
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False    
-    torch.autograd.set_detect_anomaly(True)
+    # torch.autograd.set_detect_anomaly(True)
     
     # Get current date and time
     now = datetime.now()
@@ -134,12 +134,14 @@ def training_loop(
     # Setup dataset, encoder, and network.
     dist.print0('Loading dataset...')
     val_dataset_obj = dnnlib.util.construct_class_by_name(**val_dataset_kwargs)
-    dataset_obj = dnnlib.util.construct_class_by_name(**dataset_kwargs)
+    dataset_obj = dnnlib.util.construct_class_by_name(**dataset_kwargs, augmentation=True) # apply augmentation only to training
     ref_graph = dataset_obj[0]
     ref_image = ref_graph.image
     dist.print0('Setting up encoder...')
-    encoder = dnnlib.util.construct_class_by_name(**encoder_kwargs)
+    encoder = dnnlib.util.construct_class_by_name(**encoder_kwargs, precomputed_latents = False, batch_size=batch_gpu)
     ref_image = encoder.encode_latents(torch.as_tensor(ref_image).to(device))
+    ref_graph.image = ref_image
+    dist.print0(f'Reference image shape {ref_image.shape}')
     dist.print0('Constructing network...')
 
     # Network
@@ -151,9 +153,7 @@ def training_loop(
     inputs = [
             torch.zeros([1, net.img_channels, net.img_resolution, net.img_resolution], device=device),
             torch.ones([1,], device=device),
-            torch.ones([1,], device=device),
             ref_graph.to(device),
-            # torch.zeros([1, net.label_dim], device=device),
         ]
     # Print network summary.
     if dist.get_rank() == 0:
@@ -257,22 +257,25 @@ def training_loop(
                 ddp.eval()
 
                 for graph_batch in val_iter:
+                    print(graph_batch)
                     image_latents = encoder.encode_latents(graph_batch.image.to(device))
+                    graph_batch.image = image_latents
                     dist.print0(f"Validation batch -> ", image_latents.shape)
                     loss = loss_fn(net=ddp, images = image_latents, graph=graph_batch)
                     losses.update(torch.mean(loss).detach().item())
 
-                ddp.train()
                 losses.all_reduce()
                 if dist.get_rank() == 0 and wandb_kwargs['mode'] != 'disabled': # save val loss to wandb only
                     wandb.log({"val/loss": losses.avg, "nimg": state.cur_nimg})
 
+
                 # Samples -> Sample visualisation save to wandb
+                b,c,h,w = image_latents.shape
                 dist.print0(f"Starting sampling..")
                 if wandb_kwargs['mode'] != 'disabled': # save val loss to wandb only 
                     for name, batch in zip(['Train', 'Validation'], [logging_batch, logging_batch_val]):            
                         graph = copy.deepcopy(batch) # ensure deepcopy of logging batch each call
-                        b,_,h,w = graph.image.shape
+                        b,*_ = graph.image.shape
                         sample_shape = (b, net.unet.img_channels, h, w)
                         noise = torch.randn(sample_shape, device=device)
                         dist.print0(f"{name} Sampling with image shape {noise.shape}")
@@ -287,6 +290,8 @@ def training_loop(
                         if dist.get_rank() == 0: # save vis to rank 0 only
                             logging_generate_sample_vis(graph, sampled, hignn_out, title=name) # log images to wandb
 
+
+                ddp.train()
                 dist.print0(f"Validation Finished.")
 
         # Save network snapshot.
@@ -326,6 +331,7 @@ def training_loop(
             with misc.ddp_sync(ddp, (round_idx == num_accumulation_rounds - 1)):
                 graph_batch = next(dataset_iterator).to(device)
                 image_latents = encoder.encode_latents(graph_batch.image.to(device))
+                graph_batch.image = image_latents
                 graph_batch = None if apply_cfg else graph_batch
 
                 loss = loss_fn(net=ddp, images = image_latents, graph=graph_batch)

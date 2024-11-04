@@ -16,7 +16,7 @@ import torch
 import dnnlib
 from torch_utils import distributed as dist
 import training.training_loop_hignn
-os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'DETAIL'
+# os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'DETAIL'
 
 #----------------------------------------------------------------------------
 # Configuration presets.
@@ -41,7 +41,7 @@ config_presets = {
 # Setup arguments for training.training_loop.training_loop().
 
 def setup_training_config(preset='edm2-img512-s',
-                          dataset_name = 'hig_data.coco.COCOStuffGraphPrecomputedDataset',
+                          dataset_name = 'hig_data.coco2.CocoStuffGraphDataset',
                           **opts):
     opts = dnnlib.EasyDict(opts)
     c = dnnlib.EasyDict()
@@ -65,12 +65,12 @@ def setup_training_config(preset='edm2-img512-s',
         raise click.ClickException(f'--data: {err}')
 
     # Encoder.
-    if dataset_channels == 3:
-        c.encoder_kwargs = dnnlib.EasyDict(class_name='training.encoders.StandardRGBEncoder')
-    elif dataset_channels == 8:
-        c.encoder_kwargs = dnnlib.EasyDict(class_name='training.encoders.StabilityVAEEncoder')
-    else:
-        raise click.ClickException(f'--data: Unsupported channel count {dataset_channels}')
+    # if dataset_channels == 3:
+        # c.encoder_kwargs = dnnlib.EasyDict(class_name='training.encoders.StandardRGBEncoder')
+    # elif dataset_channels == 8:
+    c.encoder_kwargs = dnnlib.EasyDict(class_name='training.encoders.StabilityVAEEncoder')
+    # else:
+        # raise click.ClickException(f'--data: Unsupported channel count {dataset_channels}')
 
     # Hyperparameters.
     c.update(total_nimg=opts.duration, batch_size=opts.batch)

@@ -221,7 +221,7 @@ class UNet(torch.nn.Module):
         channel_mult_emb    = None,         # Multiplier for final embedding dimensionality. None = select based on channel_mult.
         num_blocks          = [3,3,3,3],    # MODIFICATION: List of residual blocks per resolution instead of default 3 per res.
         attn_resolutions    = [16, 8],      # List of resolutions with self-attention.
-        gnn_resolutions     = [32],         # MODIFICATION: List of resolutions with self-attention.
+        gnn_resolutions     = [64],         # MODIFICATION: List of resolutions with self-attention.
         gnn_metadata        = None,         # MODIFICATION: Metadata for dual gnn
         label_balance       = 0.5,          # Balance between noise embedding (0) and class embedding (1).
         concat_balance      = 0.5,          # Balance between skip connections (0) and main path (1).
@@ -334,7 +334,6 @@ class Precond(torch.nn.Module):
         # turn caption to class labels input
         caption = None if graph is None or not hasattr(graph, 'caption') else graph.caption.to(x.device)
         class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if caption is None else caption.to(torch.float32).reshape(-1, self.label_dim).clone().to(x.device)
-
 
         # Preconditioning weights.
         c_skip = self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2)

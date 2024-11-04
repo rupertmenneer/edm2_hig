@@ -90,10 +90,11 @@ class StabilityVAEEncoder(Encoder):
     def __init__(self,
         vae_name    = 'stabilityai/sdxl-vae',       # Name of the VAE to use.
         raw_mean    = [6.56,  1.10,  0.10, -0.31],  # Assumed mean of the raw latents.
-        raw_std     = [4.63, 4.33, 5.51, 4.26], # Assumed standasrd deviation of the raw latents.
+        raw_std     = [4.63, 4.33, 5.51, 4.26],     # Assumed standasrd deviation of the raw latents.
         final_mean  = 0,                            # Desired mean of the final latents.
         final_std   = 0.5,                          # Desired standard deviation of the final latents.
         batch_size  = 8,                            # Batch size to use when running the VAE.
+        precomputed_latents = True,                 # whether the data uses precomputed latents
     ):
         super().__init__()
         self.vae_name = vae_name
@@ -101,6 +102,7 @@ class StabilityVAEEncoder(Encoder):
         self.bias = np.float32(final_mean) - np.float32(raw_mean) * self.scale
         self.batch_size = int(batch_size)
         self._vae = None
+        self.precomputed_latents = precomputed_latents
 
     def init(self, device): # force lazy init to happen now
         super().init(device)
@@ -126,6 +128,8 @@ class StabilityVAEEncoder(Encoder):
         return x
 
     def encode_latents(self, x): # raw latents => final latents
+        if not self.precomputed_latents:
+            x = self.encode_pixels(x)
         mean, std = x.to(torch.float32).chunk(2, dim=1)
         x = mean + torch.randn_like(mean) * std
         x = x * misc.const_like(x, self.scale).reshape(1, -1, 1, 1)
