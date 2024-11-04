@@ -119,7 +119,7 @@ def visualise_het_graph_on_image_batch(graph_batch, n=8, vae=None, **kwargs): # 
     for i, graph in enumerate(graph_batch.to_data_list()):
         if i >= n:
             break
-        decoded_img = graph.image if vae is None else convert_latents_to_pixels(graph.image, vae)
+        decoded_img = graph.image.squeeze().numpy().transpose(1,2,0) if vae is None else convert_latents_to_pixels(graph.image, vae)
         decoded_images.append(decoded_img[np.newaxis, ...])
         graph_on_image = visualise_het_graph_on_image(graph, images=decoded_img, return_image=True, **kwargs)[np.newaxis, ...]
         images.append(graph_on_image)
@@ -166,10 +166,14 @@ def visualise_het_graph_on_image(
 
     ax.imshow(images, alpha=image_alpha)
 
-    with h5py.File(hetero_data.root, 'r') as hdf_file:
-        group = hdf_file[hetero_data.fname] # open from hdf file
-        mask = np.array(group['mask'][:]) 
-        ax.imshow(mask.squeeze(), alpha=0.45)
+    # with h5py.File(hetero_data.root, 'r') as hdf_file:
+    #     group = hdf_file[hetero_data.fname] # open from hdf file
+    #     mask = np.array(group['mask'][:]) 
+    #     ax.imshow(mask.squeeze(), alpha=0.45)
+    if hasattr(hetero_data, 'mask'):
+        ax.imshow(hetero_data.mask.squeeze(), alpha=0.25)
+    
+
     
     # Create a NetworkX graph
     G = nx.Graph()
@@ -249,4 +253,37 @@ def get_node_colors(G, color_nodes = ['class_node']):
             node_colors.append('black')
     return node_colors
 
+import matplotlib.patches as patches
+def visualize_bounding_boxes(image: np.ndarray, mask: np.ndarray, bboxes: np.ndarray, labels: list, bbox_color='red', text_color='white'):
+    """
+    Visualizes bounding boxes on a numpy array image.
+    
+    Arguments:
+        image: 2D NumPy array representing the image.
+        bboxes: Bounding boxes as an Nx4 numpy array where each row is [xmin, ymin, xmax, ymax].
+                Coordinates are expected to be in 0-1 normalized format.
+        bbox_color: The color for the bounding boxes (default is red).
+    """
+    fig, ax = plt.subplots(1)
+    ax.imshow(image,)
+    ax.imshow(mask,alpha=0.5)
+    
+    # Image dimensions
+    img_h, img_w, *_ = image.shape
+    
+    # Iterate over bounding boxes and draw them with labels
+    for bbox, label in zip(bboxes, labels):
+        # Denormalize bbox coordinates back to pixel values
+        xmin, ymin, xmax, ymax = bbox 
+        # * np.array([img_w, img_h, img_w, img_h])
+        width = xmax - xmin
+        height = ymax - ymin
+        
+        # Create a rectangle patch
+        rect = patches.Rectangle((xmin, ymin), width, height, linewidth=1, edgecolor=bbox_color, facecolor='none')
+        ax.add_patch(rect)
+        
+        # Add label text
+        ax.text(xmin, ymin - 5, label, color=text_color, fontsize=8, bbox=dict(facecolor=bbox_color, alpha=0.5, pad=1))
 
+    plt.show()

@@ -300,8 +300,8 @@ class CocoAnnoations():
             obj_bbox = obj_bbox[is_valid_obj]
             obj_class = obj_class[is_valid_obj]
 
-            obj_bbox, is_valid_bb = self.center_crop_bboxes_with_filter(W, H, obj_bbox)
-            obj_class = obj_class[is_valid_bb]
+            # obj_bbox, is_valid_bb = self.center_crop_bboxes_with_filter(W, H, obj_bbox)
+            # obj_class = obj_class[is_valid_bb]
 
         meta_data['obj_bbox'] = obj_bbox.tolist()
         meta_data['obj_class'] = obj_class.tolist()
