@@ -79,7 +79,7 @@ def training_loop(
     optimizer_kwargs    = dict(class_name='torch.optim.Adam', betas=(0.9, 0.99)),
     lr_kwargs           = dict(func_name='training.training_loop_hignn.learning_rate_schedule'),
     ema_kwargs          = dict(class_name='training.phema.PowerFunctionEMA'),
-    wandb_kwargs        = dict(project='COCO_edm2_hig', mode='disabled',), 
+    wandb_kwargs        = dict(project='COCO_edm2_hig', mode='online',), 
 
     run_dir             = '.',      # Output directory.
     seed                = 0,        # Global random seed.
@@ -134,11 +134,11 @@ def training_loop(
     # Setup dataset, encoder, and network.
     dist.print0('Loading dataset...')
     val_dataset_obj = dnnlib.util.construct_class_by_name(**val_dataset_kwargs)
-    dataset_obj = dnnlib.util.construct_class_by_name(**dataset_kwargs, augmentation=True) # apply augmentation only to training
+    dataset_obj = dnnlib.util.construct_class_by_name(**dataset_kwargs, train=True) # apply augmentation only to training
     ref_graph = dataset_obj[0]
     ref_image = ref_graph.image
     dist.print0('Setting up encoder...')
-    encoder = dnnlib.util.construct_class_by_name(**encoder_kwargs, precomputed_latents = False, batch_size=batch_gpu)
+    encoder = dnnlib.util.construct_class_by_name(**encoder_kwargs, precomputed_latents = False, batch_size=32)
     ref_image = encoder.encode_latents(torch.as_tensor(ref_image).to(device))
     ref_graph.image = ref_image
     dist.print0(f'Reference image shape {ref_image.shape}')
@@ -257,7 +257,6 @@ def training_loop(
                 ddp.eval()
 
                 for graph_batch in val_iter:
-                    print(graph_batch)
                     image_latents = encoder.encode_latents(graph_batch.image.to(device))
                     graph_batch.image = image_latents
                     dist.print0(f"Validation batch -> ", image_latents.shape)
@@ -284,7 +283,7 @@ def training_loop(
 
                         # Create HIGNN embedding for logging
                         zero_input = torch.zeros((b, net.unet.model_channels,h,w), device=device)
-                        hignn_out, _ = net.unet.enc['32x32_block0'].hignn(zero_input, graph=graph.to(device))
+                        hignn_out, _ = net.unet.enc['64x64_block0'].hignn(zero_input, graph=graph.to(device))
                         hignn_out = np.clip(hignn_out[:, :3].cpu().detach().numpy().transpose(0,2,3,1), 0, 1) # clip for vis
                         dist.print0(f"Logging {name} samples to wandb..")
                         if dist.get_rank() == 0: # save vis to rank 0 only

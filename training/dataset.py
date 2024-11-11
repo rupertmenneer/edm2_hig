@@ -100,7 +100,7 @@ class Dataset(torch.utils.data.Dataset):
                 image = pyspng.load(f.read())
                 image = image.reshape(*image.shape[:2], -1).transpose(2, 0, 1)
             else:
-                image = np.array(PIL.Image.open(f))
+                image = np.array(PIL.Image.open(f).convert("RGB"))
                 image = image.reshape(*image.shape[:2], -1).transpose(2, 0, 1)
         return image
 

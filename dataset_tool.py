@@ -25,7 +25,8 @@ from tqdm import tqdm
 import h5py
 
 from training.encoders import StabilityVAEEncoder, CLIPEncoder
-from hig_data.coco import CocoStuffGraphDataset
+from hig_data.coco2 import CocoStuffGraphDataset, CocoStuffGraphDatasetLightweight
+from hig_data.utils import DataLoader
 
 
 #----------------------------------------------------------------------------
@@ -578,6 +579,67 @@ def graphencodecoco(
         group.create_dataset('img_std', data=statistics['img_std'], compression="gzip")
         group.create_dataset('cap_mean', data=np.array(statistics['cap_mean']),) 
         group.create_dataset('cap_std', data=np.array(statistics['cap_std']),) 
+
+
+#----------------------------------------------------------------------------
+
+#----------------------------------------------------------------------------
+
+@cmdline.command()
+@click.option('--path',     help='Input imgs latents', metavar='PATH',   type=str, required=True)
+@click.option('--dest',       help='Output directory or archive name', metavar='PATH',  type=str, required=True)
+@click.option('--repeats',       help='How many repeats', type=int, required=True)
+@click.option('--augmentation',       help='Apply aug?', type=bool, required=True)
+@click.option('--batch_size',       help='Apply aug?', type=int, required=False)
+
+def graphencodecoco2(
+    path: str,
+    dest: str,
+    repeats: int = 2,
+    augmentation: bool = True,
+    batch_size: int = 32,
+):
+    """Encode graph dataset to compressed precomputed form."""
+    if dest == '':
+        raise click.ClickException('--dest output filename or directory must not be an empty string')
+    assert os.path.splitext(dest)[1].lower() == '.h5', 'graph encode expects output dir to be h5 format'
+
+    dataset = CocoStuffGraphDatasetLightweight(path)
+    statistics = {k:0 for k in ['img_mean', 'img_std']}
+    vae = StabilityVAEEncoder(batch_size=batch_size)
+    dataloader = DataLoader(dataset, augmentation=augmentation, batch_size=batch_size, pin_memory=True, num_workers=6, prefetch_factor=6)
+    
+    with h5py.File(dest, 'w') as hdf:
+
+        for repeat_idx in range(repeats):
+            for (img, mask, label) in tqdm(dataloader, total=len(dataloader)):
+                
+                # convert img->latent
+                img_tensor = img.to('cuda')
+                mean_std = vae.encode_pixels(img_tensor).cpu()
+
+                # store mask at latent size
+                resized_mask = torch.nn.functional.interpolate(mask, size=(dataset.grid_size, dataset.grid_size), mode='nearest').squeeze() # resize mask to match compression
+
+                # Store image/mask/caption/bounding box arrays to h5
+                for i in range(img.shape[0]):
+                    image_filename = f'{label[i]['filename']}_{repeat_idx}'
+                    group = hdf.create_group(image_filename) # create group for datapoint
+                    group.create_dataset('image', data=mean_std[i], compression="gzip")
+                    group.create_dataset('mask', data=resized_mask[i], compression="gzip")
+                    group.create_dataset('obj_bbox', data=label[i]['obj_bbox'], compression="gzip") 
+                    group.create_dataset('obj_class', data=label[i]['obj_class'], compression="gzip") 
+                
+                # Statistics
+
+                statistics['img_mean'] += np.array(mean_std).mean(axis=(0,-2,-1))
+                statistics['img_std'] += np.array(mean_std).std(axis=(0,-2,-1))
+
+        # Save statistics
+        statistics = {k:v/len(dataloader)*repeats for k,v in statistics.items()}
+        group = hdf.create_group('statistics')
+        group.create_dataset('img_mean', data=statistics['img_mean'], compression="gzip")
+        group.create_dataset('img_std', data=statistics['img_std'], compression="gzip")
 
 
 #----------------------------------------------------------------------------

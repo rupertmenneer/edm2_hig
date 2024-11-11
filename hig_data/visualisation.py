@@ -48,7 +48,7 @@ def logging_generate_sample_vis(
         n=8,
         labels=['HIG', 'Ground Truth Decoded Latents', 'Sampled Image', 'HIGnn Output'],
         title="Sampled Images - Training Graphs",
-        latent_images=True,
+        latent_images=False,
         **kwargs,
     ):
 
@@ -119,7 +119,7 @@ def visualise_het_graph_on_image_batch(graph_batch, n=8, vae=None, **kwargs): # 
     for i, graph in enumerate(graph_batch.to_data_list()):
         if i >= n:
             break
-        decoded_img = graph.image.squeeze().numpy().transpose(1,2,0) if vae is None else convert_latents_to_pixels(graph.image, vae)
+        decoded_img = graph.image.squeeze().cpu().numpy().transpose(1,2,0) if vae is None else convert_latents_to_pixels(graph.image, vae)
         decoded_images.append(decoded_img[np.newaxis, ...])
         graph_on_image = visualise_het_graph_on_image(graph, images=decoded_img, return_image=True, **kwargs)[np.newaxis, ...]
         images.append(graph_on_image)
@@ -171,7 +171,7 @@ def visualise_het_graph_on_image(
     #     mask = np.array(group['mask'][:]) 
     #     ax.imshow(mask.squeeze(), alpha=0.45)
     if hasattr(hetero_data, 'mask'):
-        ax.imshow(hetero_data.mask.squeeze(), alpha=0.25)
+        ax.imshow(hetero_data.mask.squeeze().cpu().numpy(), alpha=0.25)
     
 
     

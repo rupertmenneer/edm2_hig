@@ -34,7 +34,7 @@ config_presets = {
     'edm2-img64-xl':    dnnlib.EasyDict(duration=640<<20,  batch=2048, channels=384, lr=0.0070, decay=35000, dropout=0.10, P_mean=-0.8, P_std=1.6),
     'edm2-coco256-s':   dnnlib.EasyDict(duration=2048<<20, batch=2048, channels=192, lr=0.0100, decay=70000, dropout=0.00, P_mean=-0.4, P_std=1.0),
     'edm2-coco256-xs':  dnnlib.EasyDict(duration=2048<<20, batch=2048, channels=128, lr=0.0120, decay=70000, dropout=0.15, P_mean=-0.4, P_std=1.0),
-    'edm2-coco256-s2':  dnnlib.EasyDict(duration=2048<<20, batch=2048, channels=192, lr=0.0100, decay=70000, dropout=0.20, P_mean=-0.4, P_std=1.0),
+    'edm2-coco256-s2':  dnnlib.EasyDict(duration=2048<<20, batch=128, channels=128, lr=0.0100, decay=70000, dropout=0.20, P_mean=-0.4, P_std=1.0),
 }
 
 #----------------------------------------------------------------------------
