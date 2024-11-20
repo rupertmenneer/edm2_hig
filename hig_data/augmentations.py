@@ -158,14 +158,7 @@ class BatchedHIGAugmentation(object):
     def __init__(self, size=512, train=True):
         self.size = size
         self.train = train
-
-        # Spatial augmentations that affect image, mask, and bounding boxes
-        self.random_crop = self.random_resized_crop
-        self.hflip = self.random_horizontal_flip
-        # Color augmentations that only affect the image
         self.augment = T.Compose([T.ColorJitter(brightness=0.08, contrast=0.08, saturation=0.08, hue=0.03)])
-
-        self.center_crop_box = self.center_crop
 
     def __call__(self, batch):
 
@@ -173,9 +166,7 @@ class BatchedHIGAugmentation(object):
         
         imgs = torch.stack([torch.from_numpy(i[0]) for i in batch]) # Assumes center cropped and same res images
         masks = torch.stack([torch.from_numpy(i[1]) for i in batch])
-        
         labels = [i[2] for i in batch]
-        labels = self.center_crop_box(labels) # mask and imgs are precomputed to be center crop - we must center crop the bounding boxes
 
         # Convert numpy arrays to torch tensors if needed
         if isinstance(imgs, np.ndarray):
@@ -185,8 +176,8 @@ class BatchedHIGAugmentation(object):
 
         if self.train:
             # Apply spatial augmentations to all images and masks in the batch
-            imgs, masks, labels = self.random_crop(imgs, masks, labels)
-            imgs, masks, labels = self.hflip(imgs, masks, labels)
+            imgs, masks, labels = self.random_resized_crop(imgs, masks, labels)
+            imgs, masks, labels = self.random_horizontal_flip(imgs, masks, labels)
             imgs = self.augment(imgs)  # Apply color augmentations to batch of images            
         
         return imgs, masks, labels
@@ -195,7 +186,7 @@ class BatchedHIGAugmentation(object):
     def random_resized_crop(self, imgs, masks, labels):
         
         # Generate parameters for cropping (one set per batch)
-        i, j, h, w = T.RandomResizedCrop.get_params(imgs[0], scale=(0.5, 1.1), ratio=(1., 1.))
+        i, j, h, w = T.RandomResizedCrop.get_params(imgs[0], scale=(0.65, 1), ratio=(1., 1.))
 
         imgs = F.resized_crop(imgs, i, j, h, w, (self.size, self.size), interpolation=T.InterpolationMode.BICUBIC)
         masks = F.resized_crop(masks, i, j, h, w, (self.size, self.size), interpolation=T.InterpolationMode.NEAREST)
@@ -205,10 +196,11 @@ class BatchedHIGAugmentation(object):
 
     def _crop_box(self, all_labels, crop_params):
 
-        i, j, h, w = crop_params
+        i, j, h, w = [i/self.size for i in crop_params]
+
 
         # Threshold for minimum bounding box area (2% of cropped image area)
-        min_area = 0.02 * self.size * self.size
+        min_area = 0.02 
 
         out = []
 
@@ -220,16 +212,16 @@ class BatchedHIGAugmentation(object):
                 xmin, ymin, xmax, ymax = bbox
 
                 # Adjust box coordinates based on crop
-                xmin_new = ((xmin - j) / w) * self.size
-                ymin_new = ((ymin - i) / h) * self.size
-                xmax_new = ((xmax - j) / w) * self.size
-                ymax_new = ((ymax - i) / h) * self.size
+                xmin_new = ((xmin - j) / w)
+                ymin_new = ((ymin - i) / h) 
+                xmax_new = ((xmax - j) / w) 
+                ymax_new = ((ymax - i) / h)
 
                 # Clamp to ensure coordinates are within [0, self.size]
-                xmin_new = max(0, min(self.size, xmin_new))
-                ymin_new = max(0, min(self.size, ymin_new))
-                xmax_new = max(0, min(self.size, xmax_new))
-                ymax_new = max(0, min(self.size, ymax_new))
+                xmin_new = max(0, min(1, xmin_new))
+                ymin_new = max(0, min(1, ymin_new))
+                xmax_new = max(0, min(1, xmax_new))
+                ymax_new = max(0, min(1, ymax_new))
                 
                 # Calculate new width and height after adjustment
                 bw_new = xmax_new - xmin_new
@@ -259,7 +251,7 @@ class BatchedHIGAugmentation(object):
     def _horizontal_flip_box(self, all_labels):
         out = []
         for labels in all_labels:
-            img_width = self.size
+            img_width = 1
             new_boxes = []
             for bbox in labels['obj_bbox']:
                 xmin, ymin, xmax, ymax = bbox
