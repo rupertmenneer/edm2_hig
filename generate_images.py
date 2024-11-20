@@ -61,7 +61,7 @@ config_presets = {
 # EDM sampler from the paper
 # "Elucidating the Design Space of Diffusion-Based Generative Models",
 # extended to support classifier-free guidance.
-
+@torch.inference_mode()
 def edm_sampler(
     net, noise, graph, gnet=None,
     num_steps=64, sigma_min=0.002, sigma_max=80, rho=7, guidance=1,
