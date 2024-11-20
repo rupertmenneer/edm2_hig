@@ -70,8 +70,8 @@ def learning_rate_schedule(cur_nimg, batch_size, ref_lr=100e-4, ref_batches=70e3
 # Main training loop.
 
 def training_loop(
-    dataset_kwargs      = dict(class_name='hig_data.coco2.CocoStuffGraphDataset',),
-    val_dataset_kwargs  = dict(class_name='hig_data.coco2.CocoStuffGraphDataset',),
+    dataset_kwargs      = dict(class_name='hig_data.coco2.COCOStuffGraphPrecomputedDataset',),
+    val_dataset_kwargs  = dict(class_name='hig_data.coco2.COCOStuffGraphPrecomputedDataset',),
     encoder_kwargs      = dict(class_name='training.encoders.StabilityVAEEncoder'),
     data_loader_kwargs  = dict(class_name='hig_data.utils.DataLoader', pin_memory=True, num_workers=4, prefetch_factor=4),
     network_kwargs      = dict(class_name='training.networks_edm2_hignn.Precond'),
@@ -100,6 +100,8 @@ def training_loop(
     cfg_dropout         = 0.0,      # dropout chance of having 0 conditions (CFG)
     node_subsample      = True,     # uniform dropout of cond nodes
     cond                = True,     # conditional embeddings e.g. caption embs
+    load_pkl            = True,
+    net_warmup          = True,
 ):
     # Initialize.
     prev_status_time = time.time()
@@ -134,11 +136,12 @@ def training_loop(
     # Setup dataset, encoder, and network.
     dist.print0('Loading dataset...')
     val_dataset_obj = dnnlib.util.construct_class_by_name(**val_dataset_kwargs)
-    dataset_obj = dnnlib.util.construct_class_by_name(**dataset_kwargs, train=True) # apply augmentation only to training
+    swapped_class_val_dataset_obj = dnnlib.util.construct_class_by_name(**val_dataset_kwargs, swapped = True)
+    dataset_obj = dnnlib.util.construct_class_by_name(**dataset_kwargs, augmentation=True, shuffle=True) # apply augmentation only to training
     ref_graph = dataset_obj[0]
     ref_image = ref_graph.image
     dist.print0('Setting up encoder...')
-    encoder = dnnlib.util.construct_class_by_name(**encoder_kwargs, precomputed_latents = False, batch_size=32)
+    encoder = dnnlib.util.construct_class_by_name(**encoder_kwargs)
     ref_image = encoder.encode_latents(torch.as_tensor(ref_image).to(device))
     ref_graph.image = ref_image
     dist.print0(f'Reference image shape {ref_image.shape}')
@@ -166,12 +169,22 @@ def training_loop(
     state = dnnlib.EasyDict(cur_nimg=0, total_elapsed_time=0)
     ddp = torch.nn.parallel.DistributedDataParallel(net, device_ids=[device], find_unused_parameters=True)
     loss_fn = dnnlib.util.construct_class_by_name(**loss_kwargs)
+
+    # if net_warmup:
+    #     # set slow lr for pretrained 
+    #     new_params = [param for name, param in net.named_parameters() if 'hignn' in name]
+    #     pretrained_params = [param for name, param in net.named_parameters() if 'hignn' not in name]
+    #     optimizer = dnnlib.util.construct_class_by_name(params=[{"params": new_params}, {"params": pretrained_params, "lr": 1e-5},], **optimizer_kwargs)
+    # else:
     optimizer = dnnlib.util.construct_class_by_name(params=net.parameters(), **optimizer_kwargs)
     ema = dnnlib.util.construct_class_by_name(net=net, **ema_kwargs) if ema_kwargs is not None else None
 
     # Load previous checkpoint and decide how long to train.
     checkpoint = dist.CheckpointIO(state=state, net=net, loss_fn=loss_fn, optimizer=optimizer, ema=ema)
-    checkpoint.load_latest(run_dir)
+    if load_pkl:
+        checkpoint.load_from_pkl(run_dir)
+    else:
+        checkpoint.load_latest(run_dir)
 
     stop_at_nimg = total_nimg
     if slice_nimg is not None:
@@ -200,11 +213,16 @@ def training_loop(
     # create logging/validation batches/dls
     dist.print0(f"Single batch logging")
     logging_batch = get_single_batch(dataset_obj, class_name=data_loader_kwargs['class_name'], subsample=node_subsample)
-    logging_batch_val = get_single_batch(val_dataset_obj, class_name=data_loader_kwargs['class_name'])
+    logging_batch_val = get_single_batch(val_dataset_obj, class_name=data_loader_kwargs['class_name'], shuffle=False)
+    logging_batch_val_swapped = get_single_batch(swapped_class_val_dataset_obj, class_name=data_loader_kwargs['class_name'], shuffle=False)
 
     dist.print0(f"Training loop starting...")
     while True:
         done = (state.cur_nimg >= stop_at_nimg)
+
+        if net_warmup and state.cur_nimg <= 5 * 1e4:
+            for name, param in net.named_parameters():
+                param.requires_grad = 'hignn' in name
 
         # Report status.
         if status_nimg is not None and (done or state.cur_nimg % status_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0):
@@ -251,6 +269,7 @@ def training_loop(
             misc.set_random_seed(seed)
             # Validation Losses
             if wandb_nimg is not None and (done or state.cur_nimg % wandb_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0):
+            # and state.cur_nimg != start_nimg:
                 # Calculate val loss
                 losses = misc.AverageMeter('Loss')
                 val_iter = iter(val_dataloader)
@@ -271,8 +290,9 @@ def training_loop(
                 # Samples -> Sample visualisation save to wandb
                 b,c,h,w = image_latents.shape
                 dist.print0(f"Starting sampling..")
+                
                 if wandb_kwargs['mode'] != 'disabled': # save val loss to wandb only 
-                    for name, batch in zip(['Train', 'Validation'], [logging_batch, logging_batch_val]):            
+                    for name, batch in zip(['Train', 'Validation', 'Validation Swapped'], [logging_batch, logging_batch_val, logging_batch_val_swapped]):            
                         graph = copy.deepcopy(batch) # ensure deepcopy of logging batch each call
                         b,*_ = graph.image.shape
                         sample_shape = (b, net.unet.img_channels, h, w)
@@ -345,8 +365,9 @@ def training_loop(
         training_stats.report('Loss/learning_rate', lr)
         if dist.get_rank() == 0 and wandb.run is not None:
             wandb.log({"learning_rate": lr, "nimg": state.cur_nimg})
-        for g in optimizer.param_groups:
-            g['lr'] = lr
+        # for g in optimizer.param_groups:
+            # g['lr'] = lr
+        optimizer.param_groups[0]['lr'] = lr
         if force_finite:
             for param in net.parameters():
                 if param.grad is not None:
@@ -359,11 +380,16 @@ def training_loop(
             ema.update(cur_nimg=state.cur_nimg, batch_size=batch_size)
         cumulative_training_time += time.time() - batch_start_time
 
+        if net_warmup and state.cur_nimg > 5 * 1e4:
+            net_warmup = False
+            for name, param in net.named_parameters():
+                param.requires_grad = True
+
 
 #----------------------------------------------------------------------------
 
 @torch.no_grad()
-def get_single_batch(dataset, class_name, n=8, subsample=False):
+def get_single_batch(dataset, class_name, n=8, subsample=False, shuffle=True):
     
     # create data loader, get a single batch, detach tensors, and return
     data_loader = dnnlib.util.construct_class_by_name(
@@ -371,7 +397,8 @@ def get_single_batch(dataset, class_name, n=8, subsample=False):
         dataset=dataset,
         batch_size=n,
         pin_memory=True,
-        subsample=subsample
+        subsample=subsample,
+        shuffle=shuffle
     )
     
     # Retrieve a single batch, detaching the tensors after loading
