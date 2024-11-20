@@ -11,6 +11,7 @@ import socket
 import torch
 import torch.distributed
 from . import training_stats
+import pickle
 
 _sync_device = None
 
@@ -136,5 +137,29 @@ class CheckpointIO:
         pt_path = os.path.join(run_dir, max(fnames, key=lambda x: float(re.fullmatch(pattern, x).group(1))))
         self.load(pt_path, verbose=verbose)
         return pt_path
+
+    def load_from_pkl(self, run_dir, pattern=r'edm2.*(\d+).pkl', verbose=True):
+
+        run_dir += '/pretrained/'
+        fnames = [entry.name for entry in os.scandir(run_dir) if entry.is_file() and re.fullmatch(pattern, entry.name)]
+        if len(fnames) == 0:
+            return None
+        pkl_path = os.path.join(run_dir, max(fnames, key=lambda x: float(re.fullmatch(pattern, x).group(1))))
+
+        if verbose:
+            print0(f'Loading from {pkl_path} ... ', end='', flush=True)
+        with open(pkl_path, 'rb') as f:
+            data = pickle.load(f, fix_imports=True, encoding="bytes")
+
+        # Extract the model state dict from the .pkl data
+        model_state_dict = data.ema.state_dict()
+        # filters out anything not in model_state + mismatched sizes + emb gain parameter (we want 0 cond emb gain at start of training)
+        # filtered_state_dict = {k: v for k, v in model_state_dict.items() if k in self._state_objs['net'].state_dict() and v.size() == self._state_objs['net'].state_dict()[k].size() and 'emb_gain' not in k}
+
+        # Non-strictly load the state dict into the target model
+        self._state_objs['net'].load_state_dict(model_state_dict, strict=False)
+
+        if verbose:
+            print0('done')
 
 #----------------------------------------------------------------------------
