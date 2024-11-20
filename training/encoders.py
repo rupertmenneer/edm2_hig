@@ -75,22 +75,27 @@ class StandardRGBEncoder(Encoder):
 #----------------------------------------------------------------------------
 # Pre-trained VAE encoder from Stability AI.
 
-# ---- ImageNet (SD)
+# ---- ImageNet (SD) - stabilityai/sd-vae-ft-mse
 #  raw_mean    = [5.81, 3.25, 0.12, -2.15]
 #  raw_std     = [4.17, 4.62, 3.71, 3.28]
 
-# ---- COCO-stuff train2017 (SDXL)
+# ---- COCO-stuff train2017 (SDXL) - stabilityai/sdxl-vae
 # raw_mean  = [6.56,  1.10,  0.10, -0.31]
 # raw_std   = [[4.63, 4.33, 5.51, 4.26]
+
+
+# 1.4762947e+02,  3.9140129e+01,  4.9969883e+00, -2.5514763e+01,
+# 1.34015900e+02, 1.19342224e+02, 1.40952194e+02, 1.10360565e+02,
+
 
 # ----  Visual Genome
 
 @persistence.persistent_class
 class StabilityVAEEncoder(Encoder):
     def __init__(self,
-        vae_name    = 'stabilityai/sdxl-vae',       # Name of the VAE to use.
-        raw_mean    = [6.56,  1.10,  0.10, -0.31],  # Assumed mean of the raw latents.
-        raw_std     = [4.63, 4.33, 5.51, 4.26],     # Assumed standasrd deviation of the raw latents.
+        vae_name    = 'stabilityai/sd-vae-ft-mse',       # Name of the VAE to use.
+        raw_mean    = [5.81, 3.25, 0.12, -2.15],  # Assumed mean of the raw latents.
+        raw_std     = [4.17, 4.62, 3.71, 3.28],     # Assumed standasrd deviation of the raw latents.
         final_mean  = 0,                            # Desired mean of the final latents.
         final_std   = 0.5,                          # Desired standard deviation of the final latents.
         batch_size  = 8,                            # Batch size to use when running the VAE.
@@ -147,7 +152,7 @@ class StabilityVAEEncoder(Encoder):
 
 #----------------------------------------------------------------------------
 
-def load_stability_vae(vae_name='stabilityai/sdxl-vae', device=torch.device('cpu')):
+def load_stability_vae(vae_name='stabilityai/sd-vae-ft-mse', device=torch.device('cpu')):
     import dnnlib
     cache_dir = dnnlib.make_cache_dir_path('diffusers')
     os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
