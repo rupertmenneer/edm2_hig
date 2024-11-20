@@ -48,7 +48,7 @@ def logging_generate_sample_vis(
         n=8,
         labels=['HIG', 'Ground Truth Decoded Latents', 'Sampled Image', 'HIGnn Output'],
         title="Sampled Images - Training Graphs",
-        latent_images=False,
+        latent_images=True,
         **kwargs,
     ):
 
@@ -65,6 +65,7 @@ def logging_generate_sample_vis(
     
 
     # save to wandb
+    print(graph_on_image_tensor.shape, images.shape, sampled_images_pixels.shape, init_gnn_emb.shape)
     save_image_batch_list([graph_on_image_tensor,
                            images,
                            sampled_images_pixels,
@@ -91,7 +92,7 @@ def save_image_batch_list(
     rows = len(image_batch_list)
 
 
-    fig = plt.figure(figsize = (cols*vis_size_factor, rows*vis_size_factor), constrained_layout=True, dpi=300)
+    fig = plt.figure(figsize = (cols*vis_size_factor, rows*vis_size_factor), constrained_layout=True, dpi=150)
     fig.suptitle(title,fontsize=10*vis_size_factor)
     fig.patch.set_facecolor('white')
 
@@ -115,15 +116,17 @@ def save_image_batch_list(
 
 def visualise_het_graph_on_image_batch(graph_batch, n=8, vae=None, **kwargs): # unpack graph batch and return list of images
     images = []
-    decoded_images = []
+
+    decoded_images = graph_batch.image.squeeze().cpu().numpy().transpose(1,2,0) if vae is None else convert_latents_to_pixels(graph_batch.image, vae)
+    print(f'decoded images {decoded_images.shape}')
     for i, graph in enumerate(graph_batch.to_data_list()):
         if i >= n:
             break
-        decoded_img = graph.image.squeeze().cpu().numpy().transpose(1,2,0) if vae is None else convert_latents_to_pixels(graph.image, vae)
-        decoded_images.append(decoded_img[np.newaxis, ...])
-        graph_on_image = visualise_het_graph_on_image(graph, images=decoded_img, return_image=True, **kwargs)[np.newaxis, ...]
+
+        graph_on_image = visualise_het_graph_on_image(graph, images=decoded_images[i].transpose(1,2,0), return_image=True, **kwargs)[np.newaxis, ...]
         images.append(graph_on_image)
-    return np.concatenate(np.array(images), axis=0).transpose(0,2,3,1), np.concatenate(np.array(decoded_images), axis=0)
+        
+    return np.concatenate(np.array(images), axis=0).transpose(0,2,3,1), decoded_images.transpose(0,2,3,1)
 
 def batch_convert_sampled_to_pixels(batch, vae):
 
@@ -139,8 +142,8 @@ def convert_latents_to_pixels(std_mean, vae=None):
         vae = dnnlib.util.construct_class_by_name(class_name='training.encoders.StabilityVAEEncoder')
     if std_mean.dim() == 3:
         std_mean = std_mean.unsqueeze(0)
-    latents = vae.encode_latents(std_mean)
-    pix = vae.decode(latents)[0].permute(1, 2, 0).cpu().numpy()
+    latents = vae.encode_latents(std_mean.to('cuda'))
+    pix = vae.decode(latents).cpu().numpy()
     return pix
 
 """Visualise HIG representation, display both underlying image and graph nodes on top
@@ -170,10 +173,12 @@ def visualise_het_graph_on_image(
     #     group = hdf_file[hetero_data.fname] # open from hdf file
     #     mask = np.array(group['mask'][:]) 
     #     ax.imshow(mask.squeeze(), alpha=0.45)
-    if hasattr(hetero_data, 'mask'):
-        ax.imshow(hetero_data.mask.squeeze().cpu().numpy(), alpha=0.25)
-    
 
+    
+    if hasattr(hetero_data, 'mask'):
+        mask = hetero_data.mask.cpu().numpy()
+        mask = torch.nn.functional.interpolate(torch.from_numpy(mask), size=(images.shape[0],images.shape[1]), mode='nearest').squeeze().numpy()
+        ax.imshow(mask, alpha=0.25)
     
     # Create a NetworkX graph
     G = nx.Graph()

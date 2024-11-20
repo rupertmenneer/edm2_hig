@@ -19,25 +19,28 @@ def random_subgraph_collate(graph: HeteroData, subsampling_keys=['class_node', '
 
     return graph.subgraph(node_dict)
 
-    
+
 class HIGCollator(torch_geometric.loader.dataloader.Collater):
-    def __init__(self, dataset, subsample=False, subsampling_keys=None, augmentation=False):
+    def __init__(self, dataset, subsample=False, subsampling_keys=None, augmentation=False, precomputed=True):
         super().__init__(dataset)
         self.subsample = subsample
         self.subsampling_keys = subsampling_keys if subsampling_keys is not None else ['class_node', 'instance_node']
         self.augmentation = None
+        self.precomputed = precomputed
 
         self.augmentation = BatchedHIGAugmentation(train=augmentation)
     
-    def __call__(self, batch):
-        # Apply subsampling before collating into a batch
+    def __call__(self, batch, is_graph=True):
 
-        batch = self.augmentation(batch)
+        # Apply subsampling before collating into a batch
+        if not is_graph:
+            batch = self.augmentation(batch)
+            return batch
+
         if self.subsample:
             batch = [random_subgraph_collate(graph, self.subsampling_keys) for graph in batch]
         batched_graph = super().__call__(batch)  # Call base class Collater to get the batched graph
         return batched_graph
-        # return batch
 
 class DataLoader(torch.utils.data.DataLoader):
     def __init__(
@@ -47,12 +50,13 @@ class DataLoader(torch.utils.data.DataLoader):
         shuffle: bool = False,
         subsample: bool = False,
         augmentation: bool = False,
+        precomputed: bool = True,
         **kwargs,
         ):
         super().__init__(
             dataset,
             batch_size,
             shuffle,
-            collate_fn=HIGCollator(dataset, subsample=subsample, augmentation=augmentation),
+            collate_fn=HIGCollator(dataset, subsample=subsample, augmentation=augmentation, precomputed=precomputed),
             **kwargs,
         )    
