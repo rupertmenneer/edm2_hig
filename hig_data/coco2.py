@@ -225,7 +225,9 @@ class CocoStuffGraphDataset(Dataset):
         bounding_boxes = [bb for i, bb in enumerate(label['obj_bbox']) if label['obj_class'][i] != 183] # exclude other class
         for class_node_idx, bounding_box in enumerate(bounding_boxes):
             # get bounding box coordinates
+            print(bounding_box)
             linear_image_idxs = bbox_to_linear_indices(bounding_box, image_size=(self.grid_size, self.grid_size))
+
             node_id_repeated = np.full((len(linear_image_idxs),), class_node_idx, dtype=np.int64) # repeat class node idx for each patch
             edge_index = np.stack([node_id_repeated, linear_image_idxs], axis=0)
             edges.append(edge_index)
@@ -295,29 +297,33 @@ and accessed at training time.
 """
 class COCOStuffGraphPrecomputedDataset(GeoDataset):
     def __init__(self,
-                path,                       # Path to h5 image/mask/graph dataset
-                captions_path,              # captions 
-                vocab_path,              # captions 
+                path,                       # Path to file paths for h5 image/mask/graph dataset
                 graph_transform = None,     # Transform to apply to the graph.
                 max_size    = None,         # Maximum number of items to load.
                 cache       = False,         # Cache images in CPU memory?
                 random_seed = 0,            # Random seed to use when applying max_size.
+                swapped     = False,
                 **kwargs,                   
         ) -> None:
 
         super().__init__(None, graph_transform)
         
-        self._path = path
-        self._captions_path = captions_path
-        self._vocab_path = vocab_path
+        with open(path, 'r') as f:
+            paths = json.load(f) 
+
+        self._path = paths['path']
+        self._captions_path = paths['captions_path']
+        self._vocab_path = paths['vocab_path'] if not swapped else paths['vocab_path_swapped']
+    
         self._files = {}
         assert self._file_ext(self._path) == '.h5'
 
         # List top-level groups which aren't stats - these are the data file names
         self.hdf_file = None
-        with h5py.File(path, 'r') as hdf:
+        with h5py.File(self._path, 'r', libver='latest', swmr=True) as hdf:
             self._data_fnames = sorted(hdf.keys())
-            print(f'Image statistics {hdf['statistics']['img_mean'][:], hdf['statistics']['img_std'][:]}')
+
+            # print(f'Image statistics {hdf['statistics']['img_mean'][:], hdf['statistics']['img_std'][:]}')
             self._data_fnames.remove('statistics')
             raw_ref_image = hdf[self._data_fnames[0]]['image'][:]
         print('Found {} complete datapoint in {}'.format(len(self._data_fnames), self._path))
@@ -334,10 +340,10 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
             np.random.RandomState(random_seed % (1 << 31)).shuffle(self._raw_idx)
             self._raw_idx = np.sort(self._raw_idx[:max_size])
 
-        self._raw_shape = [dataset_size] + list(raw_ref_image[0].shape)
+        self._raw_shape = [dataset_size] + list(raw_ref_image.shape)
         self.grid_size = self._raw_shape[-1] # grid size for image patches 
         self.num_image_nodes = self.grid_size * self.grid_size
-        self.image_patch_positions = get_image_patch_positions()
+        self.image_patch_positions = get_image_patch_positions(image_size=self.grid_size)
         
     def _load_caption(self, fname):
         with self._open_file(fname, self._captions_path) as f:
@@ -369,7 +375,7 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
         if self._cache and idx in self._cached_data.keys():
             return self._cached_data[idx]
 
-        with h5py.File(self._path, 'r') as hdf_file:
+        with h5py.File(self._path, 'r', libver='latest', swmr=True) as hdf_file:
 
             raw_idx = self._raw_idx[idx]
             fname = self._data_fnames[raw_idx]
@@ -379,8 +385,11 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
             
             # Image + Caption
             data.image = torch.from_numpy(group['image'][:]).to(torch.float32)
-            print(fname)
-            # data.caption = torch.from_numpy(group['caption'][:]).to(torch.float32)
+
+            # load caption 
+            base_fname = fname.split('_')[0]+'.npy'
+            data.caption = self._load_caption(base_fname).to(torch.float32)[None, ...]
+
             data.mask = torch.from_numpy(group['mask'][:]).to(torch.float32)
             label = {}
             label['obj_bbox'] = torch.from_numpy(group['obj_bbox'][:]).to(torch.float32)
@@ -390,7 +399,7 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
 
             # create class/instance nodes from semantic segmentation map/labels (bounding boxes)
             self._create_class_nodes(data, data.mask)
-            self._create_instance_nodes(data, label, idx)
+            self._create_instance_nodes(data, label)
             self.connect_instance_and_class(data)
 
             if isinstance(data.image, np.ndarray):
@@ -418,7 +427,7 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
         return data
 
 
-    def _create_instance_nodes(self, data, label, idx):
+    def _create_instance_nodes(self, data, label):
         
         class_labels = np.array([l-1 for l in label['obj_class'] if l != 183], dtype=np.int64) # exlcude other class
         class_latents = np.array([self._get_class_latent(l) for l in class_labels], dtype=np.float32)
@@ -429,12 +438,16 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
         edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1)
         data['instance_node', 'instance_edge', 'instance_node'].edge_index = edge_index
 
-        data = self._create_instance_to_image_edges(data, label, idx)
+        data = self._create_instance_to_image_edges(data, label)
         return data
     
-    def _create_instance_to_image_edges(self, data, label, idx):
+    def _create_instance_to_image_edges(self, data, label,):
         edges = []
         bounding_boxes = [bb for i, bb in enumerate(label['obj_bbox']) if label['obj_class'][i] != 183] # exclude other class
+        bounding_boxes = [b for b in bounding_boxes]
+
+        # data.bounding_boxes = bounding_boxes
+        # data.bounding_box_class = [l for l in label['obj_class'] if l != 183]
         for class_node_idx, bounding_box in enumerate(bounding_boxes):
             # get bounding box coordinates
             linear_image_idxs = bbox_to_linear_indices(bounding_box, image_size=(self.grid_size, self.grid_size))
@@ -524,7 +537,7 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
 
     @property
     def resolution(self):
-        assert len(self.image_shape) == 3 # CHW
+        assert len(self.image_shape) == 3 or len(self.image_shape) == 4 # CHW
         assert self.image_shape[1] == self.image_shape[2]
         return self.image_shape[1]
     
@@ -560,12 +573,12 @@ def get_image_patch_positions(image_size = 32, patch_size = 8) -> torch.Tensor:
     image_patch_positions = image_patch_positions * patch_size # scale to full res size without compression
     return image_patch_positions
 
-def linear_to_avg_2d_idx(idx, img_width=32, patch_size=8):
+def linear_to_avg_2d_idx(idx, img_width=64, patch_size=8):
     row = torch.mean((idx // img_width).float()) * patch_size
     col = torch.mean((idx % img_width).float()) * patch_size
     return torch.tensor([col, row])
 
-def linear_to_2d_idx(idx, img_width=32, patch_size=1):
+def linear_to_2d_idx(idx, img_width=64, patch_size=1):
     row = (idx // img_width).float() * patch_size
     col = (idx % img_width).float() * patch_size
     return torch.stack([row, col]).long()

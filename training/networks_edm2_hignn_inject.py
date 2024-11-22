@@ -148,17 +148,18 @@ class Block(torch.nn.Module):
         self.emb_gain = torch.nn.Parameter(torch.zeros([]))
         self.conv_res0 = MPConv(out_channels if flavor == 'enc' else in_channels, out_channels, kernel=[3,3])
         self.emb_linear = MPConv(emb_channels, out_channels, kernel=[])
+
+        self.img_emb_conv = MPConv(emb_channels, out_channels, kernel=[3,3])
+        torch.nn.init.zeros_(self.img_emb_conv.weight)
+        self.img_emb_gain = torch.nn.Parameter(torch.zeros([]))
         
         self.conv_res1 = MPConv(out_channels, out_channels, kernel=[3,3])
         self.conv_skip = MPConv(in_channels, out_channels, kernel=[1,1]) if in_channels != out_channels else None
         self.attn_qkv = MPConv(out_channels, out_channels * 3, kernel=[1,1]) if self.num_heads != 0 else None
         self.attn_proj = MPConv(out_channels, out_channels, kernel=[1,1]) if self.num_heads != 0 else None
 
-        self.hignn = HIGnnInterface(gnn_metadata, out_channels, dropout=dropout) if gnn_metadata is not None and (not gnn_enc_only or flavor == 'enc') else None
 
-
-
-    def forward(self, x, emb, graph = None):
+    def forward(self, x, emb, img_emb = None):
         # Main branch.
         x = resample(x, f=self.resample_filter, mode=self.resample_mode)
         if self.flavor == 'enc':
@@ -175,12 +176,12 @@ class Block(torch.nn.Module):
             y = torch.nn.functional.dropout(y, p=self.dropout)
         y = self.conv_res1(y)
 
-        # if hignn is present
-        apply_hignn = graph is not None and self.hignn is not None
-        if apply_hignn:
-            hig_out, graph = self.hignn(mp_silu(y), graph) # apply gnn
-            # y = y * hig_out.to(y.dtype)
-            y = mp_sum(y.to(x.dtype), hig_out.to(x.dtype), t=self.graph_balance) # add back to main branch
+        # if img emb is present add
+        if img_emb is not None:
+            _,_,h,w = x.shape
+            img_emb = torch.nn.functional.interpolate(img_emb, size=(h,w), mode='nearest')
+            img_emb = mp_silu(self.img_emb_conv(img_emb, gain=self.img_emb_gain))
+            y = mp_sum(y.to(x.dtype), img_emb.to(x.dtype), t=self.graph_balance)
 
         # Connect the branches.
         if self.flavor == 'dec' and self.conv_skip is not None:
@@ -203,8 +204,8 @@ class Block(torch.nn.Module):
         if self.clip_act is not None:
             x = x.clip_(-self.clip_act, self.clip_act)
         
-        if apply_hignn:
-            return x, graph
+        # if apply_hignn:
+            # return x, graph
         return x
 
 #----------------------------------------------------------------------------
@@ -243,6 +244,9 @@ class UNet(torch.nn.Module):
         self.emb_fourier = MPFourier(cnoise)
         self.emb_noise = MPConv(cnoise, cemb, kernel=[])
         self.emb_label = MPConv(label_dim, cemb, kernel=[]) if label_dim != 0 else None
+        self.emb_gnn_proj = MPConv(cemb, cemb, kernel=[]) if gnn_metadata is not None else None
+        print('Inject version')
+
 
         # Encoder.
         self.enc = torch.nn.ModuleDict()
@@ -253,6 +257,7 @@ class UNet(torch.nn.Module):
                 cin = cout
                 cout = channels
                 self.enc[f'{res}x{res}_conv'] = MPConv(cin, cout, kernel=[3,3])
+                self.enc[f'{res}x{res}_hignn'] = HIGnnInterface(gnn_metadata, cemb, num_gnn_layers=3) if gnn_metadata is not None else None
             else:
                 self.enc[f'{res}x{res}_down'] = Block(cout, cout, cemb, flavor='enc', resample_mode='down', **block_kwargs)
             for idx in range(num_blocks[level]):
@@ -262,7 +267,7 @@ class UNet(torch.nn.Module):
 
         # Decoder.
         self.dec = torch.nn.ModuleDict()
-        skips = [block.out_channels for block in self.enc.values()]
+        skips = [block.out_channels for block in self.enc.values() if not isinstance(block, HIGnnInterface)]
         for level, channels in reversed(list(enumerate(cblock))):
             res = img_resolution >> level
             if level == len(cblock) - 1:
@@ -283,13 +288,17 @@ class UNet(torch.nn.Module):
             emb = mp_sum(emb, self.emb_label(class_labels), t=self.label_balance)
         emb = mp_silu(emb)
 
+        if self.emb_gnn_proj:
+            graph = self.apply_graph_proj(graph)
+
         # Encoder.
         x = torch.cat([x, torch.ones_like(x[:, :1])], dim=1)
         skips = []
         for name, block in self.enc.items():
-            x = block(x) if 'conv' in name else block(x, emb=emb, graph=graph) # MODIFICATION: pass graph to encoder blocks
-            if isinstance(x, tuple): # MODIFICATION: unpack graph if hignn is present
-                x, graph = x
+            if 'hignn' in name:
+                img_emb, graph = block(x, graph)
+            else:
+                x = block(x) if 'conv' in name else block(x, emb=emb, img_emb=img_emb) # MODIFICATION: pass graph to encoder blocks
             skips.append(x)
 
         # Decoder.
@@ -300,6 +309,11 @@ class UNet(torch.nn.Module):
         x = self.out_conv(x, gain=self.out_gain)
         return x
 
+    def apply_graph_proj(self, graph, labels=['class_node', 'instance_node']):
+        for key in labels:
+            if hasattr(graph, key): # check if key exists in graph
+                graph[key].x = mp_silu(self.emb_gnn_proj(graph[key].x))
+        return graph
 #----------------------------------------------------------------------------
 # Preconditioning and uncertainty estimation.
 

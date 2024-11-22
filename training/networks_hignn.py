@@ -35,6 +35,7 @@ class HIGnnInterface(torch.nn.Module):
     def __init__(self,
         metadata,
         gnn_channels,
+        dropout=0.0,
         num_gnn_layers=2,
     ):
         super().__init__()
@@ -45,10 +46,15 @@ class HIGnnInterface(torch.nn.Module):
 
         gnn = MP_GNN(gnn_channels, num_gnn_layers, incoming_meta_paths_per_node)
         self.gnn = torch_geometric.nn.to_hetero(gnn, metadata, aggr="sum")
-
+        self.cond_gain = torch.nn.Parameter(torch.zeros([]))
+        self.dropout = dropout
+        
         
     def update_graph_image_nodes(self, x, graph):
         _,c,h,w = x.shape
+        # _,_,oh,ow = graph.image.shape
+        # if h!=oh or w!=ow:
+        #     x = torch.nn.functional.interpolate(x, size=(oh,ow), mode='bilinear')
         reshape_x = x.permute(0, 2, 3, 1).reshape(-1, c) # reshape img to image nodes [B, C, H, W] -> [B * H * W, C]
         if graph['image_node'].x.shape != c:
             with torch.no_grad():
@@ -80,7 +86,7 @@ class HIGnnInterface(torch.nn.Module):
         assert x.shape[0] == graph.image.shape[0], "Batch size mismatch between input and graph"
 
         graph = self.update_graph_image_nodes(x, graph) # update and resize image nodes on graph with current feature map
-        graph = self.apply_mp_scaling(graph) # apply MP scaling to one hot encoded nodes
+        # graph = self.apply_mp_scaling(graph) # apply MP scaling to one hot encoded nodes
 
         y = self.gnn(graph.x_dict, graph.edge_index_dict, graph.edge_attr_dict) # pass dual graph through GNN
 
@@ -88,7 +94,10 @@ class HIGnnInterface(torch.nn.Module):
         
         out = self.extract_image_nodes(graph, x.shape) # extract and resize image nodes back to image
 
-        out = normalize(out, dim=1) # pix norm out feats
+        if self.training and self.dropout != 0:
+            out = torch.nn.functional.dropout(out, p=self.dropout) # apply conditioning dropout - must fill in the blanks
+
+        out = out * self.cond_gain
 
         return out, graph
 
@@ -282,6 +291,7 @@ class MP_GeoLinear(torch.nn.Module):
     def reset_parameters(self,): # added reset parameters method for lazy hetero initialisation
         if self.in_channels > 0:
             torch.nn.init._no_grad_normal_(self.weight, 0, 1)
+            # torch.nn.init.zeros_(self.weight)
 
     # -----------
     # Following methods add lazy initialisation support - adapted from torch_geometric.nn.Linear.
@@ -331,4 +341,28 @@ class MP_GeoLinear(torch.nn.Module):
     def __repr__(self) -> str:
         return (f'{self.__class__.__name__}({self.in_channels}, '
                 f'{self.out_channels},)')
+    
+#----------------------------------------------------------------------------
+# Magnitude-preserving convolution or fully-connected layer (Equation 47)
+# with force weight normalization (Equation 66).
+
+@persistence.persistent_class
+class MPConv(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, kernel):
+        super().__init__()
+        self.out_channels = out_channels
+        self.weight = torch.nn.Parameter(torch.randn(out_channels, in_channels, *kernel))
+
+    def forward(self, x, gain=1):
+        w = self.weight.to(torch.float32)
+        if self.training:
+            with torch.no_grad():
+                self.weight.copy_(normalize(w)) # forced weight normalization
+        w = normalize(w) # traditional weight normalization
+        w = w * (gain / np.sqrt(w[0].numel())) # magnitude-preserving scaling
+        w = w.to(x.dtype)
+        if w.ndim == 2:
+            return x @ w.t()
+        assert w.ndim == 4
+        return torch.nn.functional.conv2d(x, w, padding=(w.shape[-1]//2,))
     

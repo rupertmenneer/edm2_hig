@@ -33,15 +33,17 @@ config_presets = {
     'edm2-img64-l':     dnnlib.EasyDict(duration=1024<<20, batch=2048, channels=320, lr=0.0080, decay=35000, dropout=0.10, P_mean=-0.8, P_std=1.6),
     'edm2-img64-xl':    dnnlib.EasyDict(duration=640<<20,  batch=2048, channels=384, lr=0.0070, decay=35000, dropout=0.10, P_mean=-0.8, P_std=1.6),
     'edm2-coco256-s':   dnnlib.EasyDict(duration=2048<<20, batch=2048, channels=192, lr=0.0100, decay=70000, dropout=0.00, P_mean=-0.4, P_std=1.0),
-    'edm2-coco256-xs':  dnnlib.EasyDict(duration=2048<<20, batch=2048, channels=128, lr=0.0120, decay=70000, dropout=0.15, P_mean=-0.4, P_std=1.0),
-    'edm2-coco256-s2':  dnnlib.EasyDict(duration=2048<<20, batch=128, channels=128, lr=0.0100, decay=70000, dropout=0.20, P_mean=-0.4, P_std=1.0),
+    'edm2-coco256-xs2':  dnnlib.EasyDict(duration=2048<<20, batch=1024, channels=128, lr=0.0090, decay=70000, dropout=0.10, P_mean=-0.4, P_std=1.0),
+    'edm2-coco256-s2':  dnnlib.EasyDict(duration=2048<<20, batch=512, channels=192, lr=0.0070, decay=70000, dropout=0.20, P_mean=-0.4, P_std=1.0),
+    'edm2-coco256-s3':  dnnlib.EasyDict(duration=2048<<20, batch=512, channels=192, lr=0.0100, decay=70000, dropout=0.10, P_mean=-0.3, P_std=1.0),
+    'edm2-coco256-xs3':  dnnlib.EasyDict(duration=2048<<20, batch=128, channels=128, lr=0.001, decay=70000, dropout=0.00, P_mean=-0.3, P_std=1.0),
 }
 
 #----------------------------------------------------------------------------
 # Setup arguments for training.training_loop.training_loop().
 
 def setup_training_config(preset='edm2-img512-s',
-                          dataset_name = 'hig_data.coco2.CocoStuffGraphDataset',
+                          dataset_name = 'hig_data.coco2.COCOStuffGraphPrecomputedDataset',
                           **opts):
     opts = dnnlib.EasyDict(opts)
     c = dnnlib.EasyDict()
@@ -58,23 +60,24 @@ def setup_training_config(preset='edm2-img512-s',
     c.dataset_kwargs = dnnlib.EasyDict(class_name=dataset_name, path=opts.path)
     c.val_dataset_kwargs = dnnlib.EasyDict(class_name=dataset_name, path=opts.val_path)
     try:
-        dataset_obj = dnnlib.util.construct_class_by_name(**c.dataset_kwargs)
+        dataset_obj = dnnlib.util.construct_class_by_name(**c.val_dataset_kwargs)
         dataset_channels = dataset_obj.num_channels
         del dataset_obj # conserve memory
     except IOError as err:
         raise click.ClickException(f'--data: {err}')
 
     # Encoder.
-    # if dataset_channels == 3:
-        # c.encoder_kwargs = dnnlib.EasyDict(class_name='training.encoders.StandardRGBEncoder')
-    # elif dataset_channels == 8:
-    c.encoder_kwargs = dnnlib.EasyDict(class_name='training.encoders.StabilityVAEEncoder')
-    # else:
-        # raise click.ClickException(f'--data: Unsupported channel count {dataset_channels}')
+    if dataset_channels == 3:
+        c.encoder_kwargs = dnnlib.EasyDict(class_name='training.encoders.StandardRGBEncoder')
+    elif dataset_channels == 8:
+        c.encoder_kwargs = dnnlib.EasyDict(class_name='training.encoders.StabilityVAEEncoder')
+    else:
+        raise click.ClickException(f'--data: Unsupported channel count {dataset_channels}')
+
 
     # Hyperparameters.
     c.update(total_nimg=opts.duration, batch_size=opts.batch)
-    c.network_kwargs = dnnlib.EasyDict(class_name='training.networks_edm2_hignn.Precond', model_channels=opts.channels, dropout=opts.dropout)
+    c.network_kwargs = dnnlib.EasyDict(class_name='training.networks_edm2_hignn_inject.Precond', model_channels=opts.channels, dropout=opts.dropout)
     c.loss_kwargs = dnnlib.EasyDict(class_name='training.training_loop_hignn.EDM2Loss', P_mean=opts.P_mean, P_std=opts.P_std)
     c.lr_kwargs = dnnlib.EasyDict(func_name='training.training_loop_hignn.learning_rate_schedule', ref_lr=opts.lr, ref_batches=opts.decay)
     c.wandb_kwargs = dnnlib.EasyDict(project='COCO_edm2_hig', mode='online', id=opts.wandb_id)
@@ -179,7 +182,7 @@ def parse_nimg(s):
 @click.option('--checkpoint',       help='Interval of training checkpoints', metavar='NIMG',    type=parse_nimg, default='16Mi', show_default=True)
 @click.option('--wandb_vis',        help='Interval of wandb vis', metavar='NIMG',               type=parse_nimg, default='4Mi', show_default=True)
 @click.option('--wandb_id',         help='idx of wandb run to resume', metavar='NIMG',          type=str, required=False, default=None)
-@click.option('--seed',             help='Random seed', metavar='INT',                          type=int, default=0, show_default=True)
+@click.option('--seed',             help='Random seed', metavar='INT',                          type=int, default=7, show_default=True)
 @click.option('-n', '--dry-run',    help='Print training options and exit',                     is_flag=True)
 
 def cmdline(outdir, dry_run, **opts):

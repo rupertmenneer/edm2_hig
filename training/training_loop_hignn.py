@@ -74,7 +74,7 @@ def training_loop(
     val_dataset_kwargs  = dict(class_name='hig_data.coco2.COCOStuffGraphPrecomputedDataset',),
     encoder_kwargs      = dict(class_name='training.encoders.StabilityVAEEncoder'),
     data_loader_kwargs  = dict(class_name='hig_data.utils.DataLoader', pin_memory=True, num_workers=4, prefetch_factor=4),
-    network_kwargs      = dict(class_name='training.networks_edm2_hignn.Precond'),
+    network_kwargs      = dict(class_name='training.networks_edm2_hignn_inject.Precond'),
     loss_kwargs         = dict(class_name='training.training_loop_hignn.EDM2Loss'),
     optimizer_kwargs    = dict(class_name='torch.optim.Adam', betas=(0.9, 0.99)),
     lr_kwargs           = dict(func_name='training.training_loop_hignn.learning_rate_schedule'),
@@ -98,10 +98,11 @@ def training_loop(
 
     device              = torch.device('cuda'),
     cfg_dropout         = 0.0,      # dropout chance of having 0 conditions (CFG)
-    node_subsample      = True,     # uniform dropout of cond nodes
+    node_subsample      = False,     # uniform dropout of cond nodes
     cond                = True,     # conditional embeddings e.g. caption embs
     load_pkl            = True,
-    net_warmup          = True,
+    net_warmup          = False,
+    freeze_decoder      = True,
 ):
     # Initialize.
     prev_status_time = time.time()
@@ -137,7 +138,7 @@ def training_loop(
     dist.print0('Loading dataset...')
     val_dataset_obj = dnnlib.util.construct_class_by_name(**val_dataset_kwargs)
     swapped_class_val_dataset_obj = dnnlib.util.construct_class_by_name(**val_dataset_kwargs, swapped = True)
-    dataset_obj = dnnlib.util.construct_class_by_name(**dataset_kwargs, augmentation=True, shuffle=True) # apply augmentation only to training
+    dataset_obj = dnnlib.util.construct_class_by_name(**dataset_kwargs, augmentation=False, shuffle=True) # apply augmentation only to training
     ref_graph = dataset_obj[0]
     ref_image = ref_graph.image
     dist.print0('Setting up encoder...')
@@ -163,6 +164,10 @@ def training_loop(
         misc.print_module_summary(net, inputs, max_nesting=2)
     outputs = net(*inputs) # must pass through inputs for lazy initisation (on all ranks)
     net.train().requires_grad_(True).to(device)
+    if freeze_decoder:
+        for name, param in net.named_parameters():
+            if 'dec' in name:
+                param.requires_grad = False
 
     # Setup training state.
     dist.print0('Setting up training state...')
@@ -198,7 +203,6 @@ def training_loop(
     # Main training loop.
     dataset_sampler = misc.InfiniteSampler(dataset=dataset_obj, rank=dist.get_rank(), num_replicas=dist.get_world_size(), seed=seed, start_idx=state.cur_nimg)
     # randomly dropout conditioning nodes uniformly
-    dist.print0(f'Node subsampling: {node_subsample}')
     dataset_iterator = iter(dnnlib.util.construct_class_by_name(dataset=dataset_obj, sampler=dataset_sampler, batch_size=batch_gpu, subsample=node_subsample, **data_loader_kwargs))
 
     val_dataset_sampler = torch.utils.data.DistributedSampler(dataset=val_dataset_obj, rank=dist.get_rank(), num_replicas=dist.get_world_size(), seed=seed, shuffle=False,) # use standard sampler for val
@@ -220,9 +224,12 @@ def training_loop(
     while True:
         done = (state.cur_nimg >= stop_at_nimg)
 
-        if net_warmup and state.cur_nimg <= 5 * 1e4:
+        if net_warmup and state.cur_nimg <= 2.5 * 1e4:
             for name, param in net.named_parameters():
-                param.requires_grad = 'hignn' in name
+                if 'dec' in name:
+                    param.requires_grad = False
+                else:
+                    param.requires_grad = 'hignn' in name
 
         # Report status.
         if status_nimg is not None and (done or state.cur_nimg % status_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0):
@@ -303,7 +310,8 @@ def training_loop(
 
                         # Create HIGNN embedding for logging
                         zero_input = torch.zeros((b, net.unet.model_channels,h,w), device=device)
-                        hignn_out, _ = net.unet.enc['64x64_block0'].hignn(zero_input, graph=graph.to(device))
+                        # hignn_out, _ = net.unet.enc['64x64_block0'].hignn(zero_input, graph=graph.to(device))
+                        hignn_out, _ = net.unet.enc['64x64_hignn'](zero_input, graph=graph.to(device))
                         hignn_out = np.clip(hignn_out[:, :3].cpu().detach().numpy().transpose(0,2,3,1), 0, 1) # clip for vis
                         dist.print0(f"Logging {name} samples to wandb..")
                         if dist.get_rank() == 0: # save vis to rank 0 only
@@ -380,10 +388,14 @@ def training_loop(
             ema.update(cur_nimg=state.cur_nimg, batch_size=batch_size)
         cumulative_training_time += time.time() - batch_start_time
 
-        if net_warmup and state.cur_nimg > 5 * 1e4:
+        if net_warmup and state.cur_nimg > 2.5 * 1e4:
             net_warmup = False
             for name, param in net.named_parameters():
-                param.requires_grad = True
+                if 'dec' in name:
+                    param.requires_grad = False
+                else:
+                    param.requires_grad = True
+            dist.print0('Encoder unfrozen')
 
 
 #----------------------------------------------------------------------------
