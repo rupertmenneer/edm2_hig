@@ -280,7 +280,7 @@ class UNet(torch.nn.Module):
         # Embedding.
         emb = self.emb_noise(self.emb_fourier(noise_labels))
         if self.emb_label is not None:
-            emb = mp_sum(emb, self.emb_label(class_labels), t=self.label_balance)
+            emb = mp_sum(emb, self.emb_label(class_labels * np.sqrt(class_labels.shape[1])), t=self.label_balance)
         emb = mp_silu(emb)
 
         # Encoder.
@@ -324,7 +324,7 @@ class Precond(torch.nn.Module):
         self.logvar_fourier = MPFourier(logvar_channels)
         self.logvar_linear = MPConv(logvar_channels, 1, kernel=[])
 
-    def forward(self, x, sigma, graph=None, force_fp32=False, return_logvar=False, **unet_kwargs):
+    def forward(self, x, sigma, class_labels=None, graph=None, force_fp32=False, return_logvar=False, **unet_kwargs):
         x = x.to(torch.float32)
         sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1)
         
@@ -333,8 +333,9 @@ class Precond(torch.nn.Module):
         graph = graph.clone().to(x.device) if graph is not None else graph # cast graph to device (and clone to avoid in place errors during sampling)
 
         # turn caption to class labels input
-        caption = None if graph is None or not hasattr(graph, 'caption') else graph.caption.to(x.device)
-        class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if caption is None else caption.to(torch.float32).reshape(-1, self.label_dim).clone().to(x.device)
+        # caption = None if graph is None or not hasattr(graph, 'caption') else graph.caption.to(x.device)
+        # class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if caption is None else caption.to(torch.float32).reshape(-1, self.label_dim).clone().to(x.device)
+
 
         # Preconditioning weights.
         c_skip = self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2)

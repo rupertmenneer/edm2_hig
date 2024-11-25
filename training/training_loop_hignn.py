@@ -98,11 +98,12 @@ def training_loop(
 
     device              = torch.device('cuda'),
     cfg_dropout         = 0.0,      # dropout chance of having 0 conditions (CFG)
-    node_subsample      = False,     # uniform dropout of cond nodes
+    node_subsample      = True,     # uniform dropout of cond nodes
     cond                = True,     # conditional embeddings e.g. caption embs
     load_pkl            = True,
     net_warmup          = False,
     freeze_decoder      = True,
+    train_only_label    = True
 ):
     # Initialize.
     prev_status_time = time.time()
@@ -152,6 +153,7 @@ def training_loop(
     network_kwargs['label_dim'] = 768 if cond else 0 # add emd dim if conditional
     dist.print0(f"Label dim set to {network_kwargs['label_dim']}")
     interface_kwargs = dict(img_resolution=ref_image.shape[-1], img_channels=ref_image.shape[1], gnn_metadata=ref_graph.metadata())
+
     net = dnnlib.util.construct_class_by_name(**network_kwargs, **interface_kwargs)
     net.train().to(device)
     inputs = [
@@ -159,12 +161,18 @@ def training_loop(
             torch.ones([1,], device=device),
             ref_graph.to(device),
         ]
+
     # Print network summary.
     if dist.get_rank() == 0:
         misc.print_module_summary(net, inputs, max_nesting=2)
     outputs = net(*inputs) # must pass through inputs for lazy initisation (on all ranks)
     net.train().requires_grad_(True).to(device)
-    if freeze_decoder:
+
+    if train_only_label:
+        for name, param in net.named_parameters():
+            if 'label' not in name:
+                param.requires_grad = False
+    elif freeze_decoder:
         for name, param in net.named_parameters():
             if 'dec' in name:
                 param.requires_grad = False
@@ -203,6 +211,7 @@ def training_loop(
     # Main training loop.
     dataset_sampler = misc.InfiniteSampler(dataset=dataset_obj, rank=dist.get_rank(), num_replicas=dist.get_world_size(), seed=seed, start_idx=state.cur_nimg)
     # randomly dropout conditioning nodes uniformly
+    dist.print0(f"node_subsample: {node_subsample}")
     dataset_iterator = iter(dnnlib.util.construct_class_by_name(dataset=dataset_obj, sampler=dataset_sampler, batch_size=batch_gpu, subsample=node_subsample, **data_loader_kwargs))
 
     val_dataset_sampler = torch.utils.data.DistributedSampler(dataset=val_dataset_obj, rank=dist.get_rank(), num_replicas=dist.get_world_size(), seed=seed, shuffle=False,) # use standard sampler for val
@@ -309,10 +318,14 @@ def training_loop(
                         sampled = edm_sampler(net=net, noise=noise, graph=graph) # sample images from noise and graph batch
 
                         # Create HIGNN embedding for logging
-                        zero_input = torch.zeros((b, net.unet.model_channels,h,w), device=device)
-                        # hignn_out, _ = net.unet.enc['64x64_block0'].hignn(zero_input, graph=graph.to(device))
-                        hignn_out, _ = net.unet.enc['64x64_hignn'](zero_input, graph=graph.to(device))
-                        hignn_out = np.clip(hignn_out[:, :3].cpu().detach().numpy().transpose(0,2,3,1), 0, 1) # clip for vis
+                        hignn_out = torch.zeros((b, net.unet.model_channels,h,w), device=device)
+                        if net.unet.gnn_metadata is not None:
+                            # hignn_out, _ = net.unet.enc['64x64_block0'].hignn(zero_input, graph=graph.to(device))
+                            hignn_out, _ = net.unet.enc['64x64_hignn'](hignn_out, graph=graph.to(device))
+                            hignn_out = np.clip(hignn_out[:, :3].cpu().detach().numpy().transpose(0,2,3,1), 0, 1) # clip for vis
+                        else:
+                            hignn_out = hignn_out[:, :3].cpu().detach().numpy().transpose(0,2,3,1)
+
                         dist.print0(f"Logging {name} samples to wandb..")
                         if dist.get_rank() == 0: # save vis to rank 0 only
                             logging_generate_sample_vis(graph, sampled, hignn_out, title=name) # log images to wandb

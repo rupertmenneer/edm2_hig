@@ -238,7 +238,11 @@ class UNet(torch.nn.Module):
         self.label_balance = label_balance
         self.concat_balance = concat_balance
         self.out_gain = torch.nn.Parameter(torch.zeros([]))
+
+        print(f"!!! Passing no GRAPH !!!!")
+        gnn_metadata = None
         self.gnn_metadata = gnn_metadata
+        
 
         # Embedding.
         self.emb_fourier = MPFourier(cnoise)
@@ -257,7 +261,8 @@ class UNet(torch.nn.Module):
                 cin = cout
                 cout = channels
                 self.enc[f'{res}x{res}_conv'] = MPConv(cin, cout, kernel=[3,3])
-                self.enc[f'{res}x{res}_hignn'] = HIGnnInterface(gnn_metadata, cemb, num_gnn_layers=3) if gnn_metadata is not None else None
+                if gnn_metadata:
+                    self.enc[f'{res}x{res}_hignn'] = HIGnnInterface(gnn_metadata, cemb, num_gnn_layers=3)
             else:
                 self.enc[f'{res}x{res}_down'] = Block(cout, cout, cemb, flavor='enc', resample_mode='down', **block_kwargs)
             for idx in range(num_blocks[level]):
@@ -267,7 +272,7 @@ class UNet(torch.nn.Module):
 
         # Decoder.
         self.dec = torch.nn.ModuleDict()
-        skips = [block.out_channels for block in self.enc.values() if not isinstance(block, HIGnnInterface)]
+        skips = [block.out_channels for block in self.enc.values() if not isinstance(block, HIGnnInterface) and block is not None]
         for level, channels in reversed(list(enumerate(cblock))):
             res = img_resolution >> level
             if level == len(cblock) - 1:
@@ -294,6 +299,7 @@ class UNet(torch.nn.Module):
         # Encoder.
         x = torch.cat([x, torch.ones_like(x[:, :1])], dim=1)
         skips = []
+        img_emb = None
         for name, block in self.enc.items():
             if 'hignn' in name:
                 img_emb, graph = block(x, graph)

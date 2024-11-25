@@ -37,24 +37,20 @@ class HIGnnInterface(torch.nn.Module):
         gnn_channels,
         dropout=0.0,
         num_gnn_layers=2,
+        cemb = 768,
     ):
         super().__init__()
 
-        # Calculate MP preserving meta-path factors - scale by sqrt(n_metapaths) for each node type
-        node_types, edge_types = metadata
-        incoming_meta_paths_per_node = defaultdict(int, {node_type: 1/np.sqrt(sum(1 for _, _, dst in edge_types if dst == node_type)) for node_type in node_types})
-
-        gnn = MP_GNN(gnn_channels, num_gnn_layers, incoming_meta_paths_per_node)
+        gnn = MP_GNN(gnn_channels, num_gnn_layers)
         self.gnn = torch_geometric.nn.to_hetero(gnn, metadata, aggr="sum")
         self.cond_gain = torch.nn.Parameter(torch.zeros([]))
         self.dropout = dropout
+        self.emb_gnn_proj = MPConv(cemb, cemb, kernel=[])
         
         
     def update_graph_image_nodes(self, x, graph):
         _,c,h,w = x.shape
-        # _,_,oh,ow = graph.image.shape
-        # if h!=oh or w!=ow:
-        #     x = torch.nn.functional.interpolate(x, size=(oh,ow), mode='bilinear')
+
         reshape_x = x.permute(0, 2, 3, 1).reshape(-1, c) # reshape img to image nodes [B, C, H, W] -> [B * H * W, C]
         if graph['image_node'].x.shape != c:
             with torch.no_grad():
@@ -87,7 +83,8 @@ class HIGnnInterface(torch.nn.Module):
 
         graph = self.update_graph_image_nodes(x, graph) # update and resize image nodes on graph with current feature map
         # graph = self.apply_mp_scaling(graph) # apply MP scaling to one hot encoded nodes
-
+        graph = self.apply_node_proj(graph) # project clip embeddings
+        
         y = self.gnn(graph.x_dict, graph.edge_index_dict, graph.edge_attr_dict) # pass dual graph through GNN
 
         graph = self.update_graph_embeddings(y, graph) # update graph with new embeddings
@@ -100,6 +97,12 @@ class HIGnnInterface(torch.nn.Module):
         out = out * self.cond_gain
 
         return out, graph
+    
+    def apply_node_proj(self, graph, labels=['class_node', 'instance_node']):
+        for key in labels:
+            if hasattr(graph, key): # check if key exists in graph
+                graph[key].x = mp_silu(self.emb_gnn_proj(graph[key].x))
+        return graph
 
 
 #----------------------------------------------------------------------------

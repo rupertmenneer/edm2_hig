@@ -320,7 +320,7 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
 
         # List top-level groups which aren't stats - these are the data file names
         self.hdf_file = None
-        with h5py.File(self._path, 'r', libver='latest', swmr=True) as hdf:
+        with h5py.File(self._path, 'r', libver='latest',) as hdf:
             self._data_fnames = sorted(hdf.keys())
 
             # print(f'Image statistics {hdf['statistics']['img_mean'][:], hdf['statistics']['img_std'][:]}')
@@ -375,7 +375,7 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
         if self._cache and idx in self._cached_data.keys():
             return self._cached_data[idx]
 
-        with h5py.File(self._path, 'r', libver='latest', swmr=True) as hdf_file:
+        with h5py.File(self._path, 'r', libver='latest',) as hdf_file:
 
             raw_idx = self._raw_idx[idx]
             fname = self._data_fnames[raw_idx]
