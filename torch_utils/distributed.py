@@ -154,7 +154,8 @@ class CheckpointIO:
         # Extract the model state dict from the .pkl data
         model_state_dict = data.ema.state_dict()
         # filters out anything not in model_state + mismatched sizes + emb gain parameter (we want 0 cond emb gain at start of training)
-        # filtered_state_dict = {k: v for k, v in model_state_dict.items() if k in self._state_objs['net'].state_dict() and v.size() == self._state_objs['net'].state_dict()[k].size() and 'emb_gain' not in k}
+        # filtered_state_dict = {k: v for k, v in model_state_dict.items() if k in self._state_objs['net'].state_dict() and v.size() == self._state_objs['net'].state_dict()[k].size() and 'emb_label' not in k}
+        model_state_dict = {k: v for k, v in model_state_dict.items() if 'emb_label' not in k}
 
         # Non-strictly load the state dict into the target model
         self._state_objs['net'].load_state_dict(model_state_dict, strict=False)

@@ -68,9 +68,12 @@ def edm_sampler(
     S_churn=0, S_min=0, S_max=float('inf'), S_noise=1,
     dtype=torch.float32, randn_like=torch.randn_like,
 ):
+    labels = torch.zeros([noise.shape[0], 1000], device=noise.device).to(torch.float32)
+    labels[:, 89] = 1.
     # Guided denoiser.
     def denoise(x, t):
         Dx = net(x, sigma=t, graph=graph).to(dtype)
+        # Dx = net(x, t, labels).to(dtype)
         if guidance == 1:
             return Dx
         ref_Dx = gnet(x, t).to(dtype)

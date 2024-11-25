@@ -15,7 +15,7 @@ import click
 import torch
 import dnnlib
 from torch_utils import distributed as dist
-import training.training_loop_hignn
+import training.training_loop_hignn_control
 # os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'DETAIL'
 
 #----------------------------------------------------------------------------
@@ -36,7 +36,8 @@ config_presets = {
     'edm2-coco256-xs2':  dnnlib.EasyDict(duration=2048<<20, batch=1024, channels=128, lr=0.0090, decay=70000, dropout=0.10, P_mean=-0.4, P_std=1.0),
     'edm2-coco256-s2':  dnnlib.EasyDict(duration=2048<<20, batch=512, channels=192, lr=0.0070, decay=70000, dropout=0.20, P_mean=-0.4, P_std=1.0),
     'edm2-coco256-s3':  dnnlib.EasyDict(duration=2048<<20, batch=512, channels=192, lr=0.0100, decay=70000, dropout=0.10, P_mean=-0.3, P_std=1.0),
-    'edm2-coco256-xs3':  dnnlib.EasyDict(duration=2048<<20, batch=128, channels=128, lr=0.001, decay=70000, dropout=0.00, P_mean=-0.3, P_std=1.0),
+    'edm2-coco256-xs3':  dnnlib.EasyDict(duration=2048<<20, batch=128, channels=128, lr=0.0100, decay=70000, dropout=0.00, P_mean=-0.3, P_std=1.0),
+    'edm2-coco256-m':    dnnlib.EasyDict(duration=2048<<20, batch=512, channels=256, lr=0.0070, decay=70000, dropout=0.10, P_mean=-0.4, P_std=1.0),
 }
 
 #----------------------------------------------------------------------------
@@ -77,9 +78,9 @@ def setup_training_config(preset='edm2-img512-s',
 
     # Hyperparameters.
     c.update(total_nimg=opts.duration, batch_size=opts.batch)
-    c.network_kwargs = dnnlib.EasyDict(class_name='training.networks_edm2_hignn_inject.Precond', model_channels=opts.channels, dropout=opts.dropout)
-    c.loss_kwargs = dnnlib.EasyDict(class_name='training.training_loop_hignn.EDM2Loss', P_mean=opts.P_mean, P_std=opts.P_std)
-    c.lr_kwargs = dnnlib.EasyDict(func_name='training.training_loop_hignn.learning_rate_schedule', ref_lr=opts.lr, ref_batches=opts.decay)
+    c.network_kwargs = dnnlib.EasyDict(class_name='training.networks_edm2_hignn_control.Precond', model_channels=opts.channels, dropout=opts.dropout)
+    c.loss_kwargs = dnnlib.EasyDict(class_name='training.training_loop_hignn_control.EDM2Loss', P_mean=opts.P_mean, P_std=opts.P_std)
+    c.lr_kwargs = dnnlib.EasyDict(func_name='training.training_loop_hignn_control.learning_rate_schedule', ref_lr=opts.lr, ref_batches=opts.decay)
     c.wandb_kwargs = dnnlib.EasyDict(project='COCO_edm2_hig', mode='online', id=opts.wandb_id)
     
     # Performance-related options.
@@ -127,7 +128,7 @@ def launch_training(run_dir, c):
 
     torch.distributed.barrier()
     dnnlib.util.Logger(file_name=os.path.join(run_dir, 'log.txt'), file_mode='a', should_flush=True)
-    training.training_loop_hignn.training_loop(run_dir=run_dir, **c)
+    training.training_loop_hignn_control.training_loop(run_dir=run_dir, **c)
 
 #----------------------------------------------------------------------------
 # Parse an integer with optional power-of-two suffix:

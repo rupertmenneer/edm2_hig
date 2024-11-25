@@ -4,7 +4,7 @@ import torch_geometric
 from torch_geometric.data import HeteroData
 from hig_data.augmentations import BatchedHIGAugmentation
 
-def random_subgraph_collate(graph: HeteroData, subsampling_keys=['class_node', 'instance_node']):
+def random_subgraph_collate(graph: HeteroData, subsampling_keys=['class_node',]):
     node_dict = {}
 
     for key in graph.node_types:
@@ -24,7 +24,7 @@ class HIGCollator(torch_geometric.loader.dataloader.Collater):
     def __init__(self, dataset, subsample=False, subsampling_keys=None, augmentation=False, precomputed=True):
         super().__init__(dataset)
         self.subsample = subsample
-        self.subsampling_keys = subsampling_keys if subsampling_keys is not None else ['class_node', 'instance_node']
+        self.subsampling_keys = subsampling_keys if subsampling_keys is not None else ['class_node',]
         self.augmentation = None
         self.precomputed = precomputed
 
