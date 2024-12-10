@@ -15,7 +15,7 @@ import numpy as np
 import torch
 from torch_utils import persistence
 from torch_utils import misc
-from training.networks_hignn import HIGnnInterface
+from training.networks_hignn_attn import HIGnnInterface
 
 #----------------------------------------------------------------------------
 # Normalize given tensor to unit magnitude with respect to the given

@@ -38,6 +38,7 @@ config_presets = {
     'edm2-coco256-s3':  dnnlib.EasyDict(duration=2048<<20, batch=512, channels=192, lr=0.0100, decay=70000, dropout=0.10, P_mean=-0.3, P_std=1.0),
     'edm2-coco256-xs3':  dnnlib.EasyDict(duration=2048<<20, batch=128, channels=128, lr=0.0100, decay=70000, dropout=0.00, P_mean=-0.3, P_std=1.0),
     'edm2-coco256-m':    dnnlib.EasyDict(duration=2048<<20, batch=512, channels=256, lr=0.0070, decay=70000, dropout=0.10, P_mean=-0.4, P_std=1.0),
+    'edm2-vg512-m':    dnnlib.EasyDict(duration=2048<<20, batch=512, channels=256, lr=0.0010, decay=70000, dropout=0.10, P_mean=-0.4, P_std=1.0),
 }
 
 #----------------------------------------------------------------------------

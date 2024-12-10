@@ -15,7 +15,7 @@ import numpy as np
 import torch
 from torch_utils import persistence
 from torch_utils import misc
-from training.networks_hignn import HIGnnInterface
+from training.networks_hignn_attn import HIGnnInterface
 import copy
 
 #----------------------------------------------------------------------------
@@ -187,6 +187,7 @@ class Block(torch.nn.Module):
         if self.clip_act is not None:
             x = x.clip_(-self.clip_act, self.clip_act)
         return x
+    
 
 class ControlZeroConv(MPConv):
     def __init__(self, cin, cout):
@@ -194,6 +195,7 @@ class ControlZeroConv(MPConv):
         self.gain = torch.nn.Parameter(torch.zeros([]))
     def forward(self, x):
         return super().forward(x, gain=self.gain)
+    
     
 
 #----------------------------------------------------------------------------
@@ -215,6 +217,7 @@ class UNet(torch.nn.Module):
         label_balance       = 0.5,          # Balance between noise embedding (0) and class embedding (1).
         concat_balance      = 0.5,          # Balance between skip connections (0) and main path (1).
         class_labels_var    = 0.2323,        # Calculated CLIP latent variance
+        control_net_type    = 'mp_sum',
         **block_kwargs,                     # Arguments for Block.
     ):
         super().__init__()
@@ -228,11 +231,11 @@ class UNet(torch.nn.Module):
         self.out_gain = torch.nn.Parameter(torch.zeros([]))
         self.gnn_metadata = gnn_metadata
         self.class_labels_var = class_labels_var
+        self.control_net_type = control_net_type
 
         # Embedding.
         self.emb_fourier = MPFourier(cnoise)
         self.emb_noise = MPConv(cnoise, cemb, kernel=[])
-
         self.emb_label = MPConv(label_dim, cemb, kernel=[]) if label_dim != 0 else None
         
 
@@ -271,7 +274,7 @@ class UNet(torch.nn.Module):
         self.out_conv = MPConv(cout, img_channels, kernel=[3,3])
 
         # ControlNet.
-        self.hignn = HIGnnInterface(gnn_metadata, gnn_channels=model_channels, num_gnn_layers=3)
+        self.hignn = HIGnnInterface(gnn_metadata, gnn_channels=model_channels, num_gnn_layers=3, **block_kwargs)
         self.control_e = copy.deepcopy(self.enc)
         self.control_d = torch.nn.ModuleDict()
         skips = [block.out_channels for block in self.enc.values()]
@@ -288,7 +291,7 @@ class UNet(torch.nn.Module):
     def init_control_weights(self,):
         self.control_e.load_state_dict(self.enc.state_dict()) # load pretrained encoder weights to control enc
         for name, param in self.named_parameters():
-            if 'control' in name or 'emb_label' in name: 
+            if any(keyword in name for keyword in ['control', 'emb_label', 'hignn']):
                 param.requires_grad = True
             else:
                 param.requires_grad = False
@@ -312,12 +315,22 @@ class UNet(torch.nn.Module):
 
         # ControlNet.
         control_skips = []
-        for name, block in self.enc.items():
+        # if graph is not None:
+            # graph = self.apply_node_proj(emb, graph) # project clip embeddings
+        for name, block in self.control_e.items():
             if 'conv' in name:
                 control_x = block(control_x)
                 if graph is not None:
                     hig_out, graph = self.hignn(control_x, graph=graph) # MODIFICATION: encode input with hignn and graph
-                    control_x = mp_sum(control_x, hig_out.to(control_x.dtype), t=self.label_balance)
+                    if self.control_net_type == 'mp_sum':
+                        control_x = mp_sum(control_x, hig_out.to(control_x.dtype), t=self.label_balance)
+                    elif self.control_net_type == 'mult':
+                        hig_out = hig_out + 1
+                        control_x = mp_silu(control_x * hig_out.to(control_x.dtype))
+                    elif self.control_net_type == 'cross_attn':
+                        control_x = self.cross_attention(control_x, hig_out.to(control_x.dtype))
+
+                        
             else:
                 control_x = block(control_x, emb=emb) 
 
@@ -334,6 +347,41 @@ class UNet(torch.nn.Module):
 
         x = self.out_conv(x, gain=self.out_gain)
         return x
+    
+    def apply_node_proj(self, emb, graph, labels=['class_node', 'instance_node']):
+        for key in labels:
+            if hasattr(graph, key): # check if key exists in graph
+                graph[key].x = mp_sum(emb, self.emb_label(graph[key].x / np.sqrt(self.class_labels_var)), t=self.label_balance)
+                graph[key].x = mp_silu(graph[key].x)
+        return graph
+    
+    def cross_attention(self, x, y):
+        # Cross-attention.
+        assert self.num_heads != 0
+
+        # Compute Q from x.
+        q = self.attn_q(x)
+        q = q.reshape(q.shape[0], self.num_heads, -1, q.shape[2] * q.shape[3])
+        q = normalize(q, dim=2)  # pixel norm
+        
+        # Compute K and V from y.
+        k, v = self.attn_kv(y).split(2, dim=1)
+        k = k.reshape(k.shape[0], self.num_heads, -1, k.shape[2] * k.shape[3])
+        v = v.reshape(v.shape[0], self.num_heads, -1, v.shape[2] * v.shape[3])
+        k, v = normalize(k, dim=2), normalize(v, dim=2)  # pixel norm
+
+        # Compute attention weights.
+        w = torch.einsum('nhcq,nhck->nhqk', q, k / np.sqrt(q.shape[2])).softmax(dim=3)
+        # Compute attention output.
+        y = torch.einsum('nhqk,nhck->nhcq', w, v)
+        
+        # Project back to original shape.
+        y = self.attn_proj(y.reshape(*x.shape))
+        
+        # Combine x and y (cross-attention result).
+        x = mp_sum(x, y, t=self.attn_balance)
+        return x
+
 
 #----------------------------------------------------------------------------
 # Preconditioning and uncertainty estimation.
@@ -390,3 +438,5 @@ class Precond(torch.nn.Module):
         return D_x
 
 #----------------------------------------------------------------------------
+
+

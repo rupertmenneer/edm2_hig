@@ -98,10 +98,9 @@ def training_loop(
 
     device              = torch.device('cuda'),
     caption_dropout     = 0.5,      # dropout chance of having no caption (CFG)
-    node_subsample      = True,     # uniform dropout of cond nodes
+    node_subsample      = False,     # uniform dropout of cond nodes
     cond                = True,     # conditional embeddings e.g. caption embs
     load_pkl            = True,
-    control_net         = True,
 ):
     # Initialize.
     prev_status_time = time.time()
@@ -259,7 +258,7 @@ def training_loop(
 
             misc.set_random_seed(seed)
             # Validation Losses
-            if wandb_nimg is not None and (done or state.cur_nimg % wandb_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0):
+            if wandb_nimg is not None and (done or state.cur_nimg % wandb_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0) and state.cur_nimg != start_nimg:
             # and state.cur_nimg != start_nimg:
                 # Calculate val loss
                 losses = misc.AverageMeter('Loss')
@@ -283,22 +282,22 @@ def training_loop(
                 dist.print0(f"Starting sampling..")
                 
                 if wandb_kwargs['mode'] != 'disabled': # save val loss to wandb only 
-                    for name, batch in zip(['Train', 'Validation', 'Validation Swapped'], [logging_batch, logging_batch_val, logging_batch_val_swapped]):            
+                    for name, batch in zip(['Train', 'Validation'], [logging_batch, logging_batch_val]):            
                         graph = copy.deepcopy(batch) # ensure deepcopy of logging batch each call
                         b,*_ = graph.image.shape
                         sample_shape = (b, net.unet.img_channels, h, w)
                         noise = torch.randn(sample_shape, device=device)
                         dist.print0(f"{name} Sampling with image shape {noise.shape}")
-                        
-                        if 'Swapped' in name:
-                            graph.caption = None
-                            print('For swapped validation, caption is: ', hasattr(graph, 'caption'))
 
+                        if 'Swapped' in name: # remove caption for swapped as now incorrect
+                            graph.caption = None
+                        
                         sampled = edm_sampler(net=net, noise=noise, graph=graph) # sample images from noise and graph batch
 
                         # Create HIGNN embedding for logging
                         hignn_out = torch.zeros((b, net.unet.model_channels,h,w), device=device)
                         if net.unet.gnn_metadata is not None:
+                            dist.print0('Graph visualisation...')
                             hignn_out, _ = net.unet.hignn(hignn_out, graph=graph.to(device))
                             hignn_out = np.clip(hignn_out[:, :3].cpu().detach().numpy().transpose(0,2,3,1), 0, 1) # clip for vis
                         else:

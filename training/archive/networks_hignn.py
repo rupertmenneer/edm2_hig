@@ -69,33 +69,25 @@ class HIGnnInterface(torch.nn.Module):
         for key, emb in x.items():
             graph[key].x = emb
         return graph
-    
-    def apply_mp_scaling(self, graph, one_hot_labels=['class_node', 'instance_node']):
-        for key in one_hot_labels:
-            if hasattr(graph, key): # check if key exists in graph
-                graph[key].x = normalize(graph[key].x, dim=1) # apply normalisation to class nodes at start of network
-        return graph
-    
 
     def forward(self, x, graph):
 
         assert x.shape[0] == graph.image.shape[0], "Batch size mismatch between input and graph"
 
+        # encode and update graph
         graph = self.update_graph_image_nodes(x, graph) # update and resize image nodes on graph with current feature map
-        # graph = self.apply_mp_scaling(graph) # apply MP scaling to one hot encoded nodes
         graph = self.apply_node_proj(graph) # project clip embeddings
         
+        # run GNN
         y = self.gnn(graph.x_dict, graph.edge_index_dict, graph.edge_attr_dict) # pass dual graph through GNN
 
+        # decode and extract image
         graph = self.update_graph_embeddings(y, graph) # update graph with new embeddings
-        
         out = self.extract_image_nodes(graph, x.shape) # extract and resize image nodes back to image
 
         if self.training and self.dropout != 0:
             out = torch.nn.functional.dropout(out, p=self.dropout) # apply conditioning dropout - must fill in the blanks
-
         out = out * self.cond_gain
-
         return out, graph
     
     def apply_node_proj(self, graph, labels=['class_node', 'instance_node']):
