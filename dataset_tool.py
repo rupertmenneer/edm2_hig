@@ -26,6 +26,7 @@ import h5py
 
 from training.encoders import StabilityVAEEncoder, CLIPEncoder
 from hig_data.coco2 import CocoStuffGraphDataset, CocoStuffGraphDatasetLightweight
+from hig_data.vg2 import VgSceneGraphDataset
 from hig_data.utils import DataLoader
 
 
@@ -426,7 +427,7 @@ def convert(
 #----------------------------------------------------------------------------
 
 @cmdline.command()
-@click.option('--model-url',  help='VAE encoder model', metavar='URL',                  type=str, default='stabilityai/sdxl-vae', show_default=True)
+@click.option('--model-url',  help='VAE encoder model', metavar='URL',                  type=str, default='stabilityai/sd-vae-ft-mse', show_default=True)
 @click.option('--source',     help='Input directory or archive name', metavar='PATH',   type=str, required=True)
 @click.option('--dest',       help='Output directory or archive name', metavar='PATH',  type=str, required=True)
 @click.option('--max-images', help='Maximum number of images to output', metavar='INT', type=int)
@@ -642,10 +643,198 @@ def graphencodecoco2(
         group.create_dataset('img_std', data=statistics['img_std'], compression="gzip")
 
 
-#----------------------------------------------------------------------------
+#----------------------------------------------------------------------------#----------------------------------------------------------------------------
 
 @cmdline.command()
-@click.option('--model-url',  help='VAE encoder model', metavar='URL',                  type=str, default='stabilityai/sdxl-vae', show_default=True)
+@click.option('--scene_graph_json',     help='Input imgs latents', metavar='PATH',   type=str, required=True)
+@click.option('--objects_json',     help='Input imgs latents', metavar='PATH',   type=str, required=True)
+@click.option('--dest',       help='Output directory or archive name', metavar='PATH',  type=str, required=True)
+
+def vgclipvocab(
+    scene_graph_json: str,
+    objects_json: str,
+    dest: str
+):
+
+    vocab = set()
+
+    # Load scene graphs from JSON
+    with open(scene_graph_json, 'r') as f:
+        scene_graphs = json.load(f)
+    print('loaded scene graph json')
+    with open(objects_json, 'r') as f:
+        objects = json.load(f)
+    print('loaded obj json')
+
+    # add objects, predicates and attributes to vocab set
+    for image_objs in objects:
+        for obj in image_objs['objects']:
+            vocab.add(obj['names'][0].lower())
+    for scene_objs in scene_graphs:
+        for obj in scene_objs['relationships']: 
+            vocab.add(obj['predicate'].lower())
+        for obj in scene_objs['objects']:
+            if 'attributes' in obj:
+                for attr in obj['attributes']:
+                    vocab.add(attr.lower())
+
+    clip = CLIPEncoder(batch_size=1)
+    
+    vocab = list(vocab)
+    # Create a mapping from str_key to idx
+    with h5py.File(dest, 'w') as hdf:
+        id_group = hdf.create_group('ids') # save a group for id lookup
+        latent_group = hdf.create_group('latents') # save a group for id lookup
+
+        for idx in tqdm(range(len(vocab)), total=len(vocab)):
+            text_data = vocab[idx].replace('/', '_')
+            if text_data and text_data.encode('utf8') not in id_group and str(idx) not in latent_group:
+
+                id_group.create_dataset(text_data.encode('utf8'), data=idx) # create dataset for id lookup
+                text_latents = clip.encode_raw_text(text_data, device='cuda')[0].cpu()
+                latent_group.create_dataset(str(idx), data=text_latents) # create group for datapoint
+
+                
+
+
+# #--------------------------------------------------------------------------------------------------------------------------------------------------------
+
+"""
+Graph encode Visual Genome Structure 
+
+Group -> Image ID
+
+Instance nodes -> [obj_id, vocab_id]
+Attribute nodes -> [attr_id, vocab_id]
+
+instance_to_instance -> [obj_id, vocab_id, obj_id]
+attr_to_instace -> [attr_id, vocab_id, obj_id]
+
+"""
+
+@cmdline.command()
+@click.option('--scene_graph_json',     help='Input imgs latents', metavar='PATH',   type=str, required=True)
+@click.option('--objects_json',     help='Input imgs latents', metavar='PATH',   type=str, required=True)
+@click.option('--image_dir',     help='Input imgs latents', metavar='PATH',   type=str, required=True)
+@click.option('--clip_vocab',     help='Input imgs latents', metavar='PATH',   type=str, required=True)
+@click.option('--latent_dir',     help='Input imgs latents', metavar='PATH',   type=str, required=True)
+@click.option('--dest',       help='Output directory or archive name', metavar='PATH',  type=str, required=True)
+
+def graphencodevg(
+    scene_graph_json: str, # full scene graph
+    objects_json: str, # filtered object jsons
+    clip_vocab: str, # h5 clip latent vocab dataset 
+    image_dir: str, # original image dir (mainly to extract image sizes),
+    latent_dir: str, # original image dir (mainly to extract image sizes)
+    dest: str
+):
+
+    dataset = VgSceneGraphDataset(scene_graph_json=scene_graph_json, objects_json=objects_json, image_dir=image_dir)
+
+    latent_imgs = zipfile.ZipFile(latent_dir)
+
+    # open vocab file
+    with h5py.File(clip_vocab, 'r') as clip_vocab_file:
+        clip_vocab_group = clip_vocab_file['ids']
+    
+        # objs, obj_bbox, triples, img_path
+        with h5py.File(dest, 'w') as hdf:
+
+            for idx in tqdm(range(len(dataset)), total=len(dataset)):    
+
+                _, label = dataset[idx]
+
+                if image_id in hdf:
+                    hdf[image_id]['image'][...] = img
+
+                # collect object -> clip ids
+                obj_vocab_ids = [clip_vocab_group[name.encode('utf8')][()] for name in label['obj_class']]
+                obj_bbox = label['obj_bbox']
+                
+                # collect relationship -> obj id and clip triples
+                relationship_vocab_ids = [(obj1,clip_vocab_group[name.encode('utf8')][()],obj2) for obj1,name,obj2 in label['triples']]
+                
+                # collect attributte -> attr_id to obj_id and clip triples
+                attr_vocab_ids = [(attr,clip_vocab_group[name.encode('utf8')][()],obj) for attr,name,obj in label['attributes']]
+
+                image_id = str(label['image_id'])
+                group = hdf.create_group(image_id) # create group for datapoint
+                with latent_imgs.open(f"{image_id}.npy", 'r') as f:
+                    img = np.load(f)
+                group.create_dataset('image', data=img, compression="gzip") 
+                group.create_dataset('obj_bbox', data=np.array(obj_bbox), compression="gzip") 
+                group.create_dataset('obj_class', data=np.array(obj_vocab_ids), compression="gzip") 
+                group.create_dataset('relationships', data=np.array(relationship_vocab_ids), compression="gzip") 
+                group.create_dataset('attributes', data=np.array(attr_vocab_ids), compression="gzip") 
+        
+
+#--------------------------------------------------------------------------------------------------------------------------------------------------------
+
+"""
+Graph encode Visual Genome Structure 
+
+Group -> Image ID
+
+Instance nodes -> [obj_id, vocab_id]
+Attribute nodes -> [attr_id, vocab_id]
+
+instance_to_instance -> [obj_id, vocab_id, obj_id]
+attr_to_instace -> [attr_id, vocab_id, obj_id]
+
+"""
+
+@cmdline.command()
+@click.option('--latent_dir',     help='Input imgs latents', metavar='PATH',   type=str, required=True)
+@click.option('--dest',       help='Output directory or archive name', metavar='PATH',  type=str, required=True)
+@click.option('--source',       help='Output directory or archive name', metavar='PATH',  type=str, required=True)
+
+def graphencodecopy(
+    latent_dir: str, # original image dir (mainly to extract image sizes)
+    source: str,
+    dest: str
+):
+
+        # Open the latent image archive
+    latent_imgs = zipfile.ZipFile(latent_dir)
+
+    # Open the source HDF5 file for reading
+    with h5py.File(source, 'r') as source_hdf:
+        # Create the destination HDF5 file for writing
+        with h5py.File(dest, 'w') as dest_hdf:
+            # Iterate through all groups and datasets in the source file
+            def copy_group(source_group, dest_group):
+                for key, item in source_group.items():
+                    if isinstance(item, h5py.Group):
+                        # Recursively copy groups
+                        new_group = dest_group.create_group(key)
+                        copy_group(item, new_group)
+                    elif isinstance(item, h5py.Dataset):
+                        # Check if the dataset is 'images' and modify it
+                        if key == 'image':
+                            image_id = source_group.name.split('/')[-1]
+                            with latent_imgs.open(f"{image_id}.npy", 'r') as f:
+                                new_img = np.load(f)
+                            dest_group.create_dataset(
+                                key, data=new_img, compression="gzip"
+                            )
+                        else:
+                            # Copy other datasets as is
+                            dest_group.create_dataset(
+                                key, data=item[...], compression="gzip"
+                            )
+
+            # Start copying from the root group
+            copy_group(source_hdf, dest_hdf)
+
+    # Close the latent image archive
+    latent_imgs.close()
+        
+
+#----------------------------------------------------------------------------
+
+
+@cmdline.command()
+@click.option('--model-url',  help='VAE encoder model', metavar='URL',                  type=str, default='stabilityai/sd-vae-ft-mse', show_default=True)
 @click.option('--source',     help='Input directory or archive name', metavar='PATH',   type=str, required=True)
 @click.option('--dest',       help='Output directory or archive name', metavar='PATH',  type=str, required=True)
 @click.option('--max-images', help='Maximum number of images to output', metavar='INT', type=int)
