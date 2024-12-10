@@ -20,7 +20,7 @@
 #SBATCH --ntasks=1
 #! Specify the number of GPUs per node (between 1 and 4; must be 4 if nodes>1).
 #! Note that the job submission script will enforce no more than 32 cpus per GPU.
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:1
 #! How much wallclock time will be required?
 #SBATCH --time=36:00:00
 #! What types of email messages do you wish to receive?
@@ -64,10 +64,10 @@ conda activate edm2
 export WANDB_API_KEY='150e3a3656bc3e6c76366ee98da5b0fd9f7c16ea'
 
 #! Full path to application executable: 
-application="torchrun --nproc_per_node=4 --standalone /rds/user/rfsm2/hpc-work/edm2_hig/train_edm2_hignn.py \
+application="torchrun --nproc_per_node=1 --standalone /rds/user/rfsm2/hpc-work/edm2_hig/train_edm2_hignn.py \
 --outdir=/home/rfsm2/rds/hpc-work/training_runs/edm2_pretrained_med \
---preset=edm2-coco256-m \
---cond=True \
+--preset=edm2-vg512-m \
+--cond=False \
 --batch-gpu=128 \
 --path=/home/rfsm2/rds/hpc-work/datasets/coco/precomputed_coco_train_paths.json \
 --val_path=/home/rfsm2/rds/hpc-work/datasets/coco/precomputed_coco_val_paths.json \
