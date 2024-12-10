@@ -303,6 +303,7 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
                 cache       = False,         # Cache images in CPU memory?
                 random_seed = 0,            # Random seed to use when applying max_size.
                 swapped     = False,
+                reverse_img_edges = False,
                 **kwargs,                   
         ) -> None:
 
@@ -314,6 +315,7 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
         self._path = paths['path']
         self._captions_path = paths['captions_path']
         self._vocab_path = paths['vocab_path'] if not swapped else paths['vocab_path_swapped']
+        self.reverse_img_edges=reverse_img_edges
     
         self._files = {}
         assert self._file_ext(self._path) == '.h5'
@@ -344,6 +346,7 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
         self.grid_size = self._raw_shape[-1] # grid size for image patches 
         self.num_image_nodes = self.grid_size * self.grid_size
         self.image_patch_positions = get_image_patch_positions(image_size=self.grid_size)
+
         
     def _load_caption(self, fname):
         with self._open_file(fname, self._captions_path) as f:
@@ -458,10 +461,22 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
         class_to_image_index = np.concatenate(edges, axis=1) if edges else np.zeros((2, 0), dtype=np.int64)
         data['instance_node', 'instance_to_image', 'image_node'].edge_index = torch.from_numpy(class_to_image_index) # convert to torch
 
+        # Assuming edge_index is in the shape [2, num_edges]
+        if self.reverse_img_edges:
+            reverse_edge_index = torch.stack([data['instance_node', 'instance_to_image', 'image_node'].edge_index[1],
+                                            data['instance_node', 'instance_to_image', 'image_node'].edge_index[0]])
+
+            # Assign the reverse connection to the appropriate edge type
+            data['image_node', 'image_to_instance', 'instance_node'].edge_index = reverse_edge_index
+
         return data
     
     def _create_class_nodes(self, data, mask):
-        class_labels = np.array([l for l in np.unique(mask) if l != 255], dtype=np.int64) # Must add 1 to harmonize mask labels with COCOStuff labels, remove unlabeled
+        min_pixels = self.grid_size*self.grid_size*0.02 # filter mask classes less than 2%
+        # class_labels = np.array([l for l in np.unique(mask) if l != 255 and np.sum(mask == l) >= min_pixels], dtype=np.int64) # Must add 1 to harmonize mask labels with COCOStuff labels, remove unlabeled
+        # class_labels = np.array([l for l in np.unique(mask) if l != 255 and np.sum(mask == l) >= min_pixels], dtype=np.int64)
+        if isinstance(mask, torch.Tensor):
+            class_labels = np.array([l for l in mask.unique().tolist() if l != 255 and torch.sum(mask == l) >= min_pixels],dtype=np.int64)
         class_latents = np.array([self._get_class_latent(l) for l in class_labels], dtype=np.float32)
         data['class_node'].x = torch.from_numpy(class_latents)
         data['class_node'].label = torch.from_numpy(class_labels) # add class labels for convenience
@@ -491,6 +506,15 @@ class COCOStuffGraphPrecomputedDataset(GeoDataset):
             edges.append(edge_index)
         class_to_image_index = np.concatenate(edges, axis=1) if edges else np.zeros((2, 0), dtype=np.int64)
         data['class_node', 'class_to_image', 'image_node'].edge_index = torch.from_numpy(class_to_image_index)
+
+        if self.reverse_img_edges:
+            # Reverse the edge direction
+            reverse_edge_index = torch.stack([data['class_node', 'class_to_image', 'image_node'].edge_index[1],
+                                            data['class_node', 'class_to_image', 'image_node'].edge_index[0]])
+
+            # Assign the reverse connection to the appropriate edge type
+            data['image_node', 'image_to_class', 'class_node'].edge_index = reverse_edge_index
+
         data['class_node'].pos = np.stack(class_node_pos, axis=0) if class_node_pos else np.empty((0, 2), dtype=np.float32) # add class node positions for visualisation
         data['class_node'].pos = torch.from_numpy(data['class_node'].pos)
         return data
