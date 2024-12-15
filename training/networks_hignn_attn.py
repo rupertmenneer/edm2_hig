@@ -6,6 +6,8 @@ from torch_utils import persistence
 import copy
 from collections import defaultdict
 from functools import partial
+from torch_geometric.utils import degree
+from torch.fx import wrap
 from torch_geometric.typing import (
     Adj,
     NoneType,
@@ -42,19 +44,19 @@ class HIGnnInterface(torch.nn.Module):
         gnn_channels,
         dropout=0.0,
         num_gnn_layers=2,
-        cemb = 768,
+        cemb=768,
+
     ):
         super().__init__()
 
-        gnn = MP_GNN(cemb, gnn_channels, num_gnn_layers, dropout)
+        self.metadata = metadata
+        gnn = MP_GNN(cemb, gnn_channels, num_gnn_layers=num_gnn_layers, dropout=dropout, metadata=metadata)
         self.gnn = torch_geometric.nn.to_hetero(gnn, metadata, aggr="sum")
-        self.cond_gain = torch.nn.Parameter(torch.zeros([]))
+        self.cond_gain = torch.nn.Parameter(torch.ones([]))
         self.dropout = dropout
-        self.emb_gnn_proj = MPConv(cemb, cemb, kernel=[])
         
     def update_graph_image_nodes(self, x, graph):
         _,c,h,w = x.shape
-
         reshape_x = x.permute(0, 2, 3, 1).reshape(-1, c) # reshape img to image nodes [B, C, H, W] -> [B * H * W, C]
         if graph['image_node'].x.shape != c:
             with torch.no_grad():
@@ -78,11 +80,14 @@ class HIGnnInterface(torch.nn.Module):
 
         assert x.shape[0] == graph.image.shape[0], "Batch size mismatch between input and graph"
 
-        # encode and update graph
+        x = normalize(x, dim=1) # pixel norm
+
+        # encode and update graph        
         graph = self.update_graph_image_nodes(x, graph) # update and resize image nodes on graph with current feature map
         
         # run GNN
-        y = self.gnn(graph.x_dict, graph.edge_index_dict, graph.edge_attr_dict) # pass dual graph through GNN
+        mp_scaling = heterogenous_mp_scaling(self.metadata) # calculate mp scaling for each dst node w.r.t meta-paths
+        y = self.gnn(graph.x_dict, graph.edge_index_dict, graph.edge_attr_dict, mp_scaling=mp_scaling) # pass dual graph through GNN
 
         # decode and extract image
         graph = self.update_graph_embeddings(y, graph) # update graph with new embeddings
@@ -91,15 +96,8 @@ class HIGnnInterface(torch.nn.Module):
         if self.training and self.dropout != 0:
             out = torch.nn.functional.dropout(out, p=self.dropout) # apply conditioning dropout - must fill in the blanks
         out = out * self.cond_gain
+
         return out, graph
-    
-    def apply_node_proj(self, graph, labels=['class_node', 'instance_node', 'attribute_node']):
-        for key in labels:
-            if hasattr(graph, key): # check if key exists in graph
-                graph[key].x = mp_silu(self.emb_gnn_proj(graph[key].x))
-        return graph
-
-
 
 
 #----------------------------------------------------------------------------
@@ -107,27 +105,27 @@ class HIGnnInterface(torch.nn.Module):
 
 class MP_GNN(torch.nn.Module):
 
-    def __init__(self, hidden_channels, out_channels, num_gnn_layers:int=2, mp_meta_path_factors = None, flavour = 'conv', n_heads=1, dropout=0.0):
+    def __init__(self, hidden_channels, out_channels, metadata, num_gnn_layers:int=2, flavour = 'conv', n_heads=1, dropout=0.0):
 
         super().__init__()
-        
-        gnn_module = partial(MP_GATv2Conv, heads=n_heads, dropout=dropout) if flavour == 'attn' else MP_HIPGnnConv
-        self.mp_meta_path_factors = mp_meta_path_factors
+        self.metadata=metadata
+        gnn_module = partial(MP_TransformersConv, heads=n_heads, dropout=dropout) if flavour == 'attn' else MP_HIPGnnConv
+
         self.gnn_layers = torch.nn.ModuleList()
         self.gnn_layers.append(MP_GeoLinear(-1, hidden_channels)) # input proj
         for n in range(num_gnn_layers):
             self.gnn_layers.append(gnn_module((-1,-1), hidden_channels//n_heads))
+        self.gnn_layers.append(MP_GeoLinear(-1, out_channels)) # output proj
 
-        self.gnn_layers.append(MP_GeoLinear(-1, out_channels)) # input proj
-
-    def forward(self, x, edge_index, edge_attr):        
+    def forward(self, x, edge_index, edge_attr, mp_scaling=None):        
         for block in self.gnn_layers:
             if isinstance(block, (MP_GeoLinear)):
                 x = block(x)
             else:
                 x = heterogenous_mp_silu(x)
                 x = block(x, edge_index=edge_index, edge_attr=edge_attr)
-                x = heterogenous_apply_scaling(x, self.mp_meta_path_factors)
+                if mp_scaling is not None:
+                    x = heterogenous_apply_scaling(x, mp_scaling)
         return x
     
 
@@ -154,143 +152,40 @@ def mp_sum(a, b, t=0.5):
 def heterogenous_mp_silu(x):
     return {key: mp_silu(x[key]) for key in x.keys()} if isinstance(x, dict) else x
 
-def heterogenous_apply_scaling(x, scalings):
-    if scalings is not None:
-        return {key: x[key]*scalings[key] for key in x.keys()} if isinstance(x, dict) else x
-    else:
-        return x
+def heterogenous_mp_scaling(metadata):
+    scaling = defaultdict(int)
+    for _,_,dst in metadata[1]: # iterate over destionation edge types
+        scaling[dst] += 1.0
+    scaling = {k: 1.0/np.sqrt(v) for k,v in scaling.items()}
+    return scaling
 
-
-#----------------------------------------------------------------------------
-# Magnitude-preserving Graph Attention Network v2 Conv
-
-class MP_GATv2Conv(torch_geometric.nn.MessagePassing):
-
-    def __init__(
-        self,
-        in_channels: Union[int, Tuple[int, int]],
-        out_channels: int,
-        heads: int = 8,
-        concat: bool = True,
-        dropout: float = 0.0,
-        edge_dim: Optional[int] = None,
-        bias: bool = True,
-        sum_balance: float = 0.5,
-        **kwargs,
-    ):
-        super().__init__(node_dim=0, **kwargs)
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.heads = heads
-        self.concat = concat
-        self.dropout = dropout
-        self.edge_dim = edge_dim
-        self.sum_balance = sum_balance
-
-        if isinstance(in_channels, int):
-            in_channels = (in_channels, in_channels)
-
-        self.lin_l = MP_GeoLinear(in_channels[0], heads * out_channels)
-        self.lin_r = MP_GeoLinear(in_channels[1], heads * out_channels)
-        self.att = torch.nn.Parameter(torch.empty(1, heads, out_channels))
-
-        if edge_dim is not None:
-            self.lin_edge = MP_GeoLinear(edge_dim, heads * out_channels)
-        else:
-            self.lin_edge = None
-
-        if bias and concat:
-            self.bias = torch.nn.Parameter(torch.empty(heads * out_channels))
-        elif bias and not concat:
-            self.bias = torch.nn.Parameter(torch.empty(out_channels))
-        else:
-            self.register_parameter('bias', None)
-
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        self.lin_l.reset_parameters()
-        self.lin_r.reset_parameters()
-        if self.lin_edge is not None:
-            self.lin_edge.reset_parameters()
-        torch.nn.init.xavier_uniform_(self.att)
-        torch.nn.init.zeros_(self.bias)
-
-
-    def forward(self, x, edge_index, edge_attr=None):
-        H, C = self.heads, self.out_channels
-
-        if isinstance(x, torch.Tensor):
-            x = (x, x) # split into two branches
-
-        # cast left and right handsides, and edge attrs
-        x_l = self.lin_l(x[0]).view(-1, H, C)
-        x_r = self.lin_r(x[1]).view(-1, H, C)
-
-        alpha = self.edge_updater(edge_index, x=(x_l, x_r), edge_attr=edge_attr) # calc attn alphas
-        out = self.propagate(edge_index, x=(x_l, x_r), alpha=alpha) # propagate with attn
-
-        if self.concat:
-            out = out.view(-1, H * C)
-        else:
-            out = out.mean(dim=1)
-
-        if self.bias is not None:
-            out = out + self.bias
-        
-        return out
-
-
-    def edge_update(self, x_j: torch.Tensor, x_i: torch.Tensor, edge_attr: OptTensor,
-                    index: torch.Tensor, ptr: OptTensor,
-                    dim_size: Optional[int]) -> torch.Tensor:
-        
-        x = mp_sum(x_i, x_j.to(x_i.dtype), t=self.sum_balance)
-
-        if edge_attr is not None:
-            if edge_attr.dim() == 1:
-                edge_attr = edge_attr.view(-1, 1)
-            assert self.lin_edge is not None
-            edge_attr = self.lin_edge(edge_attr)
-            edge_attr = edge_attr.view(-1, self.heads, self.out_channels)
-            x = mp_sum(x, edge_attr, t=self.sum_balance)
-
-        x = mp_silu(x)
-        alpha = (x * self.att).sum(dim=-1)
-        alpha = torch_geometric.utils.softmax(alpha, index, ptr, dim_size)
-        alpha = torch.nn.functional.dropout(alpha, p=self.dropout, training=self.training)
-        return alpha
-
-    def message(self, x_j: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
-        return x_j * alpha.unsqueeze(-1)
-    
-    def __repr__(self) -> str:
-        return (f'{self.__class__.__name__}({self.in_channels}, '
-                f'{self.out_channels}, heads={self.heads})')
-
+def heterogenous_apply_scaling(x, scaling):
+    scaled = x*scaling
+    return scaled
 
 #----------------------------------------------------------------------------
 # Magnitude-preserving Graph SAGE Conv
 # with force weight normalization (Equation 66 karras).
 
 
-class MP_Sum_Aggregation(torch_geometric.nn.Aggregation):
+class MP_Sum_Aggregation(torch_geometric.nn.Aggregation): # This is no longer required (now use sum and perform during messages)
 
+    
     def forward(self, x: torch.Tensor, index: Optional[torch.Tensor] = None,
                 ptr: Optional[torch.Tensor] = None, dim_size: Optional[int] = None,
                 dim: int = -2) -> torch.Tensor:
-                
+
         if dim_size is None:
             dim_size = int(index.max()) + 1 if index.numel() > 0 else 0
-        # Compute the number of neighbors (N) for each node
+
         bincount = torch.bincount(index, minlength=dim_size)
         N = bincount.clamp(min=1).float()
+        sqrt_N = torch.sqrt(N).unsqueeze(-1)
 
-        sqrt_N = torch.sqrt(N).unsqueeze(-1)  # take sqrt of bincount to adhere to magnitude-preserving scaling
+        sum_out = self.reduce(x, index, ptr, dim_size, dim, reduce='sum')
 
-        mean_out = self.reduce(x, index, ptr, dim_size, dim, reduce='sum') # mean aggregation of local neighbourhood
-
-        mean_out = mean_out / sqrt_N # apply magnitude-preserving scaling
+        # Scale by 1/sqrt(N) to preserve variance
+        mean_out = sum_out / sqrt_N
 
         return mean_out
 
@@ -298,15 +193,11 @@ class MP_Sum_Aggregation(torch_geometric.nn.Aggregation):
 class MP_HIPGnnConv(torch_geometric.nn.MessagePassing):
 
     def __init__(self,
-                 in_channels        = Union[int, Tuple[int, int]], # input channels for L and R branches
+                 in_channels        = Union[int, Tuple[int, int]], # input channels for neighbourhood and residual branches
                  out_channels       = int,                         # output channels
                  **kwargs,
         ):
-        
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        aggr = MP_Sum_Aggregation()
-        super().__init__(aggr=aggr, **kwargs) # set aggr to None to allow custom message and aggregate functions
+        super().__init__(aggr='add')  # use simple add aggregation, we manually scale to control magnitudes
 
         if isinstance(in_channels, int):
             in_channels = (in_channels, in_channels)
@@ -315,47 +206,41 @@ class MP_HIPGnnConv(torch_geometric.nn.MessagePassing):
                 in_channels[0])
         else:
             aggr_out_channels = in_channels[0]
-
-        self.lin_l = MP_GeoLinear(aggr_out_channels, out_channels,)
-        self.lin_r = MP_GeoLinear(in_channels[1], out_channels,)
+        
+        self.lin_neighbour = MP_GeoLinear(aggr_out_channels, out_channels,)
+        self.lin_res = MP_GeoLinear(in_channels[1], out_channels,)
         self.reset_parameters()
 
-    def forward(
-        self,
-        x: Union[torch.Tensor, torch_geometric.typing.OptPairTensor],
-        edge_index: torch_geometric.typing.Adj,
-        size: torch_geometric.typing.Size = None,
-        edge_attr: torch_geometric.typing.OptPairTensor = None,
-    ) -> torch.Tensor:
-        
-        
+
+    def forward(self, x, edge_index: torch_geometric.typing.Adj, edge_attr: torch_geometric.typing.OptPairTensor = None,):
         if isinstance(x, torch.Tensor):
-            x = (x, x) # split into two branches
+            x = (x, x) # split into src dst if only one tensor is given
 
-        out = self.propagate(edge_index, x=x, edge_attr=edge_attr, size=size) # propagate (with MP-cat if edge attribute exists)
-        out = self.lin_l(out) # left weight matrix
+        row, col = edge_index
+        deg = degree(col, x[1].size(0), dtype=x[1].dtype)
 
-        x_r = x[1]
-        if x_r is not None:
-            out_r = self.lin_r(x_r).to(x[0].dtype) # right weight matrix
-            out = mp_sum(out.to(x[0].dtype), out_r) # apply right weight matrix and MP sum to connect branches
+        deg_inv = deg.pow(-0.5)
+        deg_inv[deg_inv == float('inf')] = 0
+        norm = deg_inv[col] # scale w.r.t sqrt N of incoming
+        out = self.propagate(edge_index, x=x, norm=norm, edge_attr=edge_attr) # aggr local neighbourhood with mp scaling
 
+        neighbourhood = self.lin_neighbour(out) # apply learned mp transform to neighbourhood aggr
+        residual = self.lin_res(x[1]).to(x[0].dtype) # apply learned mp transform to residual connection
+
+        join = mp_sum(residual, neighbourhood, t=0.5) # join residual and neighbourhhod branches with mp-sum
+        out = torch.where((deg > 0).unsqueeze(-1), join, residual) # apply mask to avoid mp-sum on 0 degree nodes (this would distort output features)
 
         return out
 
     def propagate(self, edge_index, size=None, **kwargs):
         return super().propagate(edge_index, size=size, **kwargs)
 
-    def message(self, x_j, edge_attr):
+    def message(self, x_j, norm, edge_attr):
+        weighted = x_j * norm.unsqueeze(-1) # scale w.r.t sqrt N
         if edge_attr is not None:
-            out = mp_cat(x_j, edge_attr)
+            out = mp_cat(weighted, edge_attr) # apply mp_cap to weighted nodes if present
             return out
-        return x_j
-    
-    def message_and_aggregate(self, adj_t: torch_geometric.typing.Adj, x: torch_geometric.typing.OptPairTensor) -> torch.Tensor:
-        if isinstance(adj_t, torch_geometric.typing.SparseTensor):
-            adj_t = adj_t.set_value(None, layout=None)
-        return torch_geometric.utils.spmm(adj_t, x[0], reduce=self.aggr)
+        return weighted
 
     def __repr__(self) -> str:
         return (f'{self.__class__.__name__}({self.in_channels}, '
@@ -491,3 +376,145 @@ class MPConv(torch.nn.Module):
         assert w.ndim == 4
         return torch.nn.functional.conv2d(x, w, padding=(w.shape[-1]//2,))
     
+
+#----------------------------------------------------------------------------
+# Other classes GAT/Transformer etc.
+
+class MP_TransformersConv(torch_geometric.nn.MessagePassing):
+    def __init__(self, in_channels, out_channels, heads=8, dropout=0.0, edge_dim=None, sum_balance=0.5, bias=True):
+        super().__init__(node_dim=0)
+        self.attn = MP_GATv2Conv(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            heads=heads,
+            concat=True,
+            dropout=dropout,
+            edge_dim=edge_dim,
+            sum_balance=sum_balance,
+            bias=bias
+        )
+        self.lin_1 = MP_GeoLinear(out_channels * heads, out_channels * heads)
+        self.lin_2 = MP_GeoLinear(out_channels * heads, out_channels * heads)
+        self.norm1 = torch.nn.LayerNorm(out_channels * heads)
+        self.norm2 = torch.nn.LayerNorm(out_channels * heads)
+
+    def forward(self, x, edge_index, edge_attr=None):
+        h = self.attn(x, edge_index, edge_attr)
+        print(x[0].shape, h.shape)
+        x = x if isinstance(x, torch.Tensor) else x[0]
+        if x.size(-1) != h.size(-1):
+            # Project input if needed
+            x = torch.zeros_like(h)
+        x = self.norm1(x + h)
+        h_ff = self.lin_2(mp_silu(self.lin_1(x)))
+        print(h_ff.shape)
+        out = self.norm2(x + h_ff)
+        print(out.shape)
+        return out
+
+#----------------------------------------------------------------------------
+# Magnitude-preserving Graph Attention Network v2 Conv
+
+class MP_GATv2Conv(torch_geometric.nn.MessagePassing):
+
+    def __init__(
+        self,
+        in_channels: Union[int, Tuple[int, int]],
+        out_channels: int,
+        heads: int = 8,
+        concat: bool = True,
+        dropout: float = 0.0,
+        edge_dim: Optional[int] = None,
+        bias: bool = True,
+        sum_balance: float = 0.5,
+        **kwargs,
+    ):
+        super().__init__(node_dim=0, **kwargs)
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.heads = heads
+        self.concat = concat
+        self.dropout = dropout
+        self.edge_dim = edge_dim
+        self.sum_balance = sum_balance
+
+        if isinstance(in_channels, int):
+            in_channels = (in_channels, in_channels)
+
+        self.lin_l = MP_GeoLinear(in_channels[0], heads * out_channels)
+        self.lin_r = MP_GeoLinear(in_channels[1], heads * out_channels)
+        self.att = torch.nn.Parameter(torch.empty(1, heads, out_channels))
+
+        if edge_dim is not None:
+            self.lin_edge = MP_GeoLinear(edge_dim, heads * out_channels)
+        else:
+            self.lin_edge = None
+
+        if bias and concat:
+            self.bias = torch.nn.Parameter(torch.empty(heads * out_channels))
+        elif bias and not concat:
+            self.bias = torch.nn.Parameter(torch.empty(out_channels))
+        else:
+            self.register_parameter('bias', None)
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        self.lin_l.reset_parameters()
+        self.lin_r.reset_parameters()
+        if self.lin_edge is not None:
+            self.lin_edge.reset_parameters()
+        torch.nn.init.xavier_uniform_(self.att)
+        torch.nn.init.zeros_(self.bias)
+
+
+    def forward(self, x, edge_index, edge_attr=None):
+        H, C = self.heads, self.out_channels
+
+        if isinstance(x, torch.Tensor):
+            x = (x, x) # split into two branches
+
+        # cast left and right handsides, and edge attrs
+        x_l = self.lin_l(x[0]).view(-1, H, C)
+        x_r = self.lin_r(x[1]).view(-1, H, C)
+
+        alpha = self.edge_updater(edge_index, x=(x_l, x_r), edge_attr=edge_attr) # calc attn alphas
+        out = self.propagate(edge_index, x=(x_l, x_r), alpha=alpha) # propagate with attn
+
+        if self.concat:
+            out = out.view(-1, H * C)
+        else:
+            out = out.mean(dim=1)
+
+        if self.bias is not None:
+            out = out + self.bias
+        
+        return out
+
+
+    def edge_update(self, x_j: torch.Tensor, x_i: torch.Tensor, edge_attr: OptTensor,
+                    index: torch.Tensor, ptr: OptTensor,
+                    dim_size: Optional[int]) -> torch.Tensor:
+        
+        x = mp_sum(x_i, x_j.to(x_i.dtype), t=self.sum_balance)
+
+        if edge_attr is not None:
+            if edge_attr.dim() == 1:
+                edge_attr = edge_attr.view(-1, 1)
+            assert self.lin_edge is not None
+            edge_attr = self.lin_edge(edge_attr)
+            edge_attr = edge_attr.view(-1, self.heads, self.out_channels)
+            x = mp_sum(x, edge_attr, t=self.sum_balance)
+
+        x = mp_silu(x)
+        alpha = (x * self.att).sum(dim=-1)
+        alpha = torch_geometric.utils.softmax(alpha, index, ptr, dim_size)
+        alpha = torch.nn.functional.dropout(alpha, p=self.dropout, training=self.training)
+        return alpha
+
+    def message(self, x_j: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
+        return x_j * alpha.unsqueeze(-1)
+    
+    def __repr__(self) -> str:
+        return (f'{self.__class__.__name__}({self.in_channels}, '
+                f'{self.out_channels}, heads={self.heads})')
