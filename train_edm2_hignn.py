@@ -38,14 +38,16 @@ config_presets = {
     'edm2-coco256-s3':  dnnlib.EasyDict(duration=2048<<20, batch=512, channels=192, lr=0.0100, decay=70000, dropout=0.10, P_mean=-0.3, P_std=1.0),
     'edm2-coco256-xs3':  dnnlib.EasyDict(duration=2048<<20, batch=128, channels=128, lr=0.0100, decay=70000, dropout=0.00, P_mean=-0.3, P_std=1.0),
     'edm2-coco256-m':    dnnlib.EasyDict(duration=2048<<20, batch=512, channels=256, lr=0.0070, decay=70000, dropout=0.10, P_mean=-0.4, P_std=1.0),
-    'edm2-vg512-m':    dnnlib.EasyDict(duration=2048<<20, batch=512, channels=256, lr=0.0010, decay=70000, dropout=0.10, P_mean=-0.4, P_std=1.0),
+    'edm2-vg512-m':    dnnlib.EasyDict(duration=2048<<20, batch=512, channels=256, lr=0.0090, decay=70000, dropout=0.10, P_mean=-0.4, P_std=1.0),
+    'edm2-vg512-s':    dnnlib.EasyDict(duration=2048<<20, batch=512, channels=192, lr=0.0100, decay=70000, dropout=0.00, P_mean=-0.4, P_std=1.0),
+    'edm2-vg512-l':    dnnlib.EasyDict(duration=896<<20, batch=512, channels=320, lr=0.0080, decay=70000, dropout=0.10, P_mean=-0.4, P_std=1.0),
 }
 
 #----------------------------------------------------------------------------
 # Setup arguments for training.training_loop.training_loop().
 
 def setup_training_config(preset='edm2-img512-s',
-                          dataset_name = 'hig_data.coco2.COCOStuffGraphPrecomputedDataset',
+                          dataset_name = 'hig_data.vg2.VGGraphPrecomputedDataset',
                           **opts):
     opts = dnnlib.EasyDict(opts)
     c = dnnlib.EasyDict()
@@ -60,7 +62,7 @@ def setup_training_config(preset='edm2-img512-s',
 
     # Dataset.
     c.dataset_kwargs = dnnlib.EasyDict(class_name=dataset_name, path=opts.path)
-    c.val_dataset_kwargs = dnnlib.EasyDict(class_name=dataset_name, path=opts.val_path)
+    c.val_dataset_kwargs = dnnlib.EasyDict(class_name=dataset_name, path=opts.val_path, split='val')
     try:
         dataset_obj = dnnlib.util.construct_class_by_name(**c.val_dataset_kwargs)
         dataset_channels = dataset_obj.num_channels
@@ -79,7 +81,7 @@ def setup_training_config(preset='edm2-img512-s',
 
     # Hyperparameters.
     c.update(total_nimg=opts.duration, batch_size=opts.batch)
-    c.network_kwargs = dnnlib.EasyDict(class_name='training.networks_edm2_hignn_control.Precond', model_channels=opts.channels, dropout=opts.dropout)
+    c.network_kwargs = dnnlib.EasyDict(class_name='training.networks_edm2_hignn_control_xs.Precond', model_channels=opts.channels, dropout=opts.dropout)
     c.loss_kwargs = dnnlib.EasyDict(class_name='training.training_loop_hignn_control.EDM2Loss', P_mean=opts.P_mean, P_std=opts.P_std)
     c.lr_kwargs = dnnlib.EasyDict(func_name='training.training_loop_hignn_control.learning_rate_schedule', ref_lr=opts.lr, ref_batches=opts.decay)
     c.wandb_kwargs = dnnlib.EasyDict(project='COCO_edm2_hig', mode='online', id=opts.wandb_id)

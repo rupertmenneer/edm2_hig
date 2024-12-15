@@ -14,6 +14,7 @@ class VgSceneGraphDataset(torch.utils.data.Dataset):
                  scene_graph_json,
                  objects_json,
                  image_dir,
+                 vocab_path,
                  image_size=512,
                  ):
         super(VgSceneGraphDataset, self).__init__()
@@ -34,14 +35,16 @@ class VgSceneGraphDataset(torch.utils.data.Dataset):
         for image in objects:
             image_id = image['image_id']
             self.image_id_to_objects[image_id] = image['objects']
-        
 
+        self.vocab = set()
+        with h5py.File(vocab_path, 'r') as clip_vocab_file:
+            self.vocab = set(clip_vocab_file['ids'].keys())
+        print('loaded vocab')
+        
         supported_ext = {'.jpg', '.jpeg', '.png', '.npy'}
         # self.image_fnames = sorted(fname for fname in set(self.get_filelist_from_dir(image_dir)) if self._file_ext(fname) in supported_ext)
         self.image_ids = list(self.scene_graphs.keys())
         print('sorted filenames')
-
-
 
     def get_filelist_from_dir(self, path):
         return {os.path.relpath(os.path.join(root, fname), start=path) for root, _dirs, files in os.walk(path) for fname in files}
@@ -52,7 +55,6 @@ class VgSceneGraphDataset(torch.utils.data.Dataset):
     def __getitem__(self, index,):
 
         img_id = self.image_ids[index]
-        # image_path_id = int(os.path.splitext(img_fname)[0])
         img_path = os.path.join(self.image_dir, str(img_id)+'.jpg')
 
         # Get the scene graph for the given index
@@ -63,18 +65,21 @@ class VgSceneGraphDataset(torch.utils.data.Dataset):
         assert img_id == image_id, f"Image path ID {img_id} does not match scene graph image ID {image_id}"
 
         # Process objects
-        # objects = scene_graph['objects']
         objects = self.image_id_to_objects[image_id]
 
         # extract name, boxes, global_id_to_local_id
-        obj_names = [self.clean_str(', '.join(o['names'])) if 'names' in o else 'object' for o in objects]
-        boxes = [[o['x'], o['y'], o['x']+o['w'], o['y']+o['h']] for o in objects]
-        global_id_to_local_id = {o['object_id']: i for i, o in enumerate(objects)}
-        global_ids = [o['object_id'] for o in objects]
+        filter_objs = [o for o in objects if self.clean_str(o['names'][0]) in self.vocab]
+        obj_names = [self.clean_str(o['names'][0]) for o in filter_objs]
+        boxes = [[o['x'], o['y'], o['x']+o['w'], o['y']+o['h']] for o in filter_objs]
+
+        global_id_to_local_id = {o['object_id']: i for i, o in enumerate(filter_objs)}
+        global_ids = [o['object_id'] for o in filter_objs]
         
 
         # Handle cropping and adjust bounding boxes
-        image, boxes, valid_idxs = self.center_crop(img_path, boxes)
+        image = torch.from_numpy(self._load_image_from_path(img_path))
+        orig_h, orig_w = image.shape[-2:]
+        image, boxes, valid_idxs = self.center_crop(image, boxes)
 
         # Update objs and global_ids based on valid indices
         obj_names = [obj_names[i] for i in valid_idxs]
@@ -91,8 +96,10 @@ class VgSceneGraphDataset(torch.utils.data.Dataset):
                 attrs = obj['attributes']
                 for attr in attrs:
                     if attr:
-                        attr_list.append((attr_idx, self.clean_str(attr), idx)) # save as [attr_id, vocab_word, obj_id]
-                        attr_idx += 1
+                        clean = self.clean_str(attr)
+                        if clean in self.vocab:
+                            attr_list.append((attr_idx, clean, idx)) # save as [attr_id, vocab_word, obj_id]
+                            attr_idx += 1
 
         # Process relationships involving valid objects
         relationships = scene_graph['relationships']
@@ -106,17 +113,27 @@ class VgSceneGraphDataset(torch.utils.data.Dataset):
             obj_local_id = global_id_to_local_id.get(object_id)
 
             if subj_local_id is not None and obj_local_id is not None and predicate:
-                updated_triples.append((subj_local_id, self.clean_str(predicate), obj_local_id)) # save as [obj_id, vocab_word, obj_id]
+                clean_rel = self.clean_str(predicate)
+                if clean_rel in self.vocab:
+                    updated_triples.append((subj_local_id, clean_rel, obj_local_id)) # save as [obj_id, vocab_word, obj_id]
 
 
-        return image, {'image_id': image_id, 'obj_class': obj_names, 'obj_bbox': boxes, 'triples': set(updated_triples), 'attributes': set(attr_list),}
+        return image, {'image_id': image_id,
+                       'obj_class': obj_names,
+                       'obj_bbox': boxes,
+                       'triples': set(updated_triples),
+                       'attributes': set(attr_list),
+                       'orig_img_size': (orig_h, orig_w)}
 
     def clean_str(self, s):
-        return s.lower().replace('/', '_')
+        s = s.strip().lower()
+        # keep letters, numbers, spaces, and basic punctuation: commas, periods, apostrophes, exclamation, question
+        s = re.sub(r'[^a-z0-9 ,.\'!?]+', '', s)
+        s = re.sub(r'\s+', ' ', s).strip()
+        return s
 
-    def center_crop(self, img_path, obj_bbox, min_area=0.01):
+    def center_crop(self, img, obj_bbox, min_area=0.01):
 
-        img = torch.from_numpy(self._load_image_from_path(img_path))
 
         # Calculate center crop parameters
         width, height = img.shape[-1], img.shape[-2]
@@ -140,6 +157,10 @@ class VgSceneGraphDataset(torch.utils.data.Dataset):
         for idx, bbox in enumerate(obj_bbox):
 
             xmin, ymin, xmax, ymax = bbox
+            # Compute original area
+            bw = (xmax - xmin) 
+            bh = (ymax - ymin)
+            original_area = bw * bh
 
             xmin_new = max(0, min(1, (xmin - left) / crop_size))
             ymin_new = max(0, min(1, (ymin - top) / crop_size))
@@ -151,10 +172,12 @@ class VgSceneGraphDataset(torch.utils.data.Dataset):
             bw_new = (xmax_new - xmin_new)*self.image_size
             bh_new = (ymax_new - ymin_new)*self.image_size
 
-            # Check if the new box area meets the minimum threshold
-            if bw_new * bh_new >= min_area:
+            new_area = bw_new * bh_new
+
+            # Check both minimum area and 50% reduction criteria
+            if new_area >= min_area and new_area >= 0.5 * original_area:
                 new_boxes.append([xmin_new, ymin_new, xmax_new, ymax_new])
-                valid_idxs.append(idx)  # Store the original index of valid boxes
+                valid_idxs.append(idx)
 
 
         return img, new_boxes, valid_idxs
@@ -189,27 +212,35 @@ import torch
 
 class VGGraphPrecomputedDataset(GeoDataset):
     def __init__(self,
-                 path,                       # Path to the precomputed h5 file 
-                 vocab_path,                 # Path to the vocab h5 file
-                 split_path,                 # Path to dataset ID splits
+                 path,                       # Path to file paths for h5 dataset and vocab
                  split='train',              # which split to select default is training split
                  transform=None,
                  max_size=None,
                  random_seed=0,
-                 reverse_img_edges=False):
+                 reverse_img_edges=False,
+                 class_labels_var=0.3775,    # Calculated CLIP latent variance
+                 **kwargs,
+                 ):
         super().__init__(None, transform)
 
-        self.path = path
-        self.vocab_path = vocab_path
+        with open(path, 'r') as f:
+            paths = json.load(f) 
+
+        self.path = paths['path'] # Path to the precomputed h5 file 
+        self.vocab_path = paths['vocab_path'] # Path to the vocab h5 file
+        self.split_path = paths['split_path'] # Path to dataset ID splits
+        self.class_labels_var = class_labels_var
+
         self.reverse_img_edges = reverse_img_edges
-        self._cache = False
 
-        with open(split_path, 'r') as f:
-            self._data_fnames = sorted(json.load(f)[split])
+        
+        with h5py.File(self.path, 'r', libver='latest') as hdf:
+            self.loadable_img_ids = set(hdf.keys())
 
-        # with h5py.File(self.path, 'r') as hdf:
-        #     # no 'ids' dataset now, just groups per image id
-        #     self._data_fnames = sorted(list(hdf.keys()))
+        with open(self.split_path, 'r') as f:
+            image_ids = list(json.load(f)[split])
+            image_id_plus_flip = [str(i) for i in image_ids] + [f"{i}_f" for i in image_ids]
+            self._data_fnames = sorted([i for i in image_id_plus_flip if i in self.loadable_img_ids])
 
         dataset_size = len(self._data_fnames)
         self._raw_idx = np.arange(dataset_size, dtype=np.int64)
@@ -217,23 +248,32 @@ class VGGraphPrecomputedDataset(GeoDataset):
             np.random.RandomState(random_seed).shuffle(self._raw_idx)
             self._raw_idx = np.sort(self._raw_idx[:max_size])
 
-        # Load vocab file 
-        with h5py.File(self.vocab_path, 'r') as f:
-            # self.vocab = f['latents']
-            self.vocab = {k: v[:] for k, v in f['latents'].items()}
+        with h5py.File(self.path, 'r', libver='latest') as hdf:
+            raw_ref_image = hdf[str(self._data_fnames[0])]['image'][:]
+
+        self._raw_shape = [dataset_size] + list(raw_ref_image.shape)
+        self.grid_size = self._raw_shape[-1] # grid size for image patches 
+
+        self.vocab_lookup = {}
+        self.vocab = []
+        with h5py.File(self.vocab_path, 'r', libver='latest') as f:
+            for i, (key, value) in enumerate(f['latents'].items()):
+                self.vocab_lookup[key] = i
+                self.vocab.append(torch.from_numpy(value[:]))
+        self.vocab = torch.stack(self.vocab)
+
+        self.latent_dim = 768
+        self.image_patch_positions = get_image_patch_positions(image_size=self.grid_size)
 
     def __len__(self):
         return len(self._raw_idx)
 
     def _create_image_nodes(self, data, img):
-        C, H, W = img.shape
         data.image = img.unsqueeze(0)
-        image_patches = img.permute(1,2,0).reshape(H*W, C) # [H*W, C]
-
-        data['image_node'].x = image_patches
-        assert H==W, 'width and height should match, only square aspect ratio supported'
-        data['image_node'].pos = get_image_patch_positions(image_size=H)
-        return H, W
+        image_patch_placeholder = torch.empty((data.image.shape[-2]*data.image.shape[-1], 1), dtype=torch.float32, device=data.image.device) # must init be same size for correct minibatching
+        data['image_node'].x = image_patch_placeholder
+        data['image_node'].pos = self.image_patch_positions
+        return data
 
     def _create_attribute_nodes(self, data, attributes):
         if attributes.size > 0:
@@ -242,22 +282,20 @@ class VGGraphPrecomputedDataset(GeoDataset):
             attr_obj_id = attributes[:,2].astype(np.int64)
 
             # create attribute nodes from clip vocab
-            attr_vocab = np.stack([self._get_vocab_latent(i) for i in attr_vocab])
-            data['attribute_node'].x = torch.from_numpy(attr_vocab).to(torch.float32)
+            data['attribute_node'].x = torch.stack([self._get_vocab_latent(i) for i in attr_vocab]).to(torch.float32)
+            data['attribute_node'].label = np.stack([i for i in attr_vocab])
 
-            # create attribute to object edges
-            edge_index = torch.stack([torch.from_numpy(attr_ids).long(),
-                            torch.from_numpy(attr_obj_id).long()])
+            # create attribute to object edges, and reverse - otherwise they are simply isolated nodes
+            edge_index = torch.stack([torch.from_numpy(attr_ids).long(), torch.from_numpy(attr_obj_id).long()])
             data['attribute_node', 'attr_to_instance', 'instance_node'].edge_index = edge_index
-
-
             reverse_attr = torch.stack([edge_index[1], edge_index[0]])
             data['instance_node', 'instance_to_attr', 'attribute_node'].edge_index = reverse_attr
 
-        else: # cover empty case
-            data['attribute_node'].x = torch.empty((0,), dtype=torch.long)
-            data['attribute_node'].attr_id = torch.empty((0,), dtype=torch.long)
+        else: # cover no attributes present case
+            data['attribute_node'].x = torch.empty((0, self.latent_dim), dtype=torch.float32)
+            data['attribute_node'].label = torch.empty((0, 2), dtype=torch.long)
             data['attribute_node', 'attr_to_instance', 'instance_node'].edge_index = torch.empty((2,0), dtype=torch.long)
+            data['instance_node', 'instance_to_attr', 'attribute_node'].edge_index = torch.empty((2,0), dtype=torch.long)
         return data
 
     def _create_relationship_edges(self, data, relationships):
@@ -270,7 +308,7 @@ class VGGraphPrecomputedDataset(GeoDataset):
                                       torch.from_numpy(rel_obj2).long()])
             
             # edge_attr from clip vocab
-            edge_attr = torch.tensor([self._get_vocab_latent(i) for i in rel_vocab]).to(torch.float32)
+            edge_attr = torch.stack([self._get_vocab_latent(i) for i in rel_vocab]).to(torch.float32)
 
             data['instance_node', 'rel_to_instance', 'instance_node'].edge_index = edge_index
             data['instance_node', 'rel_to_instance', 'instance_node'].edge_attr = edge_attr
@@ -281,23 +319,43 @@ class VGGraphPrecomputedDataset(GeoDataset):
                 data['instance_node', 'instance_to_rel', 'instance_node'].edge_attr = edge_attr
         else: # cover empty case
             data['instance_node', 'rel_to_instance', 'instance_node'].edge_index = torch.empty((2,0), dtype=torch.long)
+            data['instance_node', 'rel_to_instance', 'instance_node'].edge_attr = torch.empty((0, self.latent_dim), dtype=torch.float32)
         return data
 
-    def _create_instance_nodes(self, data, obj_class):
-        obj_vocab = np.stack([self._get_vocab_latent(i) for i in obj_class])
-        data['instance_node'].x = torch.from_numpy(obj_vocab).to(torch.float32)
+    def _create_instance_nodes(self, data, obj_class, obj_bbox):
+        if len(obj_class) == 0:
+            data['instance_node'].x = torch.empty((0, self.latent_dim), dtype=torch.float32)
+            data['instance_node'].pos = torch.empty((0, 2), dtype=torch.float32)
+            data['instance_node'].label = torch.empty((0, 2), dtype=torch.long)
+        else:
+            obj_vocab = torch.stack([self._get_vocab_latent(i) for i in obj_class]).to(torch.float32)
+            data['instance_node'].label = np.stack([i for i in obj_class])
+            data['instance_node'].x = obj_vocab
+            pos = np.array([((x_min+x_max)/2, (y_min+y_max)/2) for x_min,y_min,x_max,y_max in obj_bbox])
+            data['instance_node'].pos = torch.from_numpy(pos).to(torch.float32)
         return data
     
+    # def __del__(self):
+    #     # Close the HDF5 file when the dataset is deleted
+    #     if self.vocab_file is not None:
+    #         self.vocab_file.close()
+    
     def _get_vocab_latent(self, class_idx):
-        label = self.vocab[str(class_idx)][:] # lookup with str idx to get the vector describing the vocab clip latent
-        return label
+        default = torch.zeros((self.latent_dim), dtype=torch.float32)
+        if str(class_idx) in self.vocab_lookup:
+            index = self.vocab_lookup[str(class_idx)]
+            latent = self.vocab[index]
+            if torch.isnan(latent).any():
+                return default
+            return self.vocab[index] / np.sqrt(self.class_labels_var)
+        return default
 
-    def _create_instance_to_image_edges(self, data, obj_bbox, H, W):
+    def _create_instance_to_image_edges(self, data, obj_bbox,):
 
         # from bounding boxes convert to linear image idxs
         instance_to_image_edges = []
         for i, bbox in enumerate(obj_bbox):
-            linear_indices = bbox_to_linear_indices(bbox, (H,W))
+            linear_indices = bbox_to_linear_indices(bbox, image_size=(self.grid_size, self.grid_size))
             if len(linear_indices) > 0:
                 node_id_repeated = np.full((len(linear_indices),), i, dtype=np.int64)
                 edge_index = np.stack([node_id_repeated, linear_indices], axis=0)
@@ -309,7 +367,7 @@ class VGGraphPrecomputedDataset(GeoDataset):
             instance_to_image_index = np.zeros((2,0), dtype=np.int64)
 
         # create edges in hetero obj
-        data['instance_node', 'instance_to_image', 'image_node'].edge_index = torch.from_numpy(instance_to_image_index)
+        data['instance_node', 'instance_to_image', 'image_node'].edge_index = torch.from_numpy(instance_to_image_index).to(torch.long)
         if self.reverse_img_edges:
             reverse_edge_index = torch.stack([data['instance_node', 'instance_to_image', 'image_node'].edge_index[1],
                                               data['instance_node', 'instance_to_image', 'image_node'].edge_index[0]])
@@ -317,25 +375,32 @@ class VGGraphPrecomputedDataset(GeoDataset):
         return data
 
     def __getitem__(self, idx: int) -> HeteroData:
+
         data = RelaxedHeteroData()
         raw_idx = self._raw_idx[idx]
         fname = str(self._data_fnames[raw_idx])
 
-        with h5py.File(self.path, 'r') as hdf:
+        with h5py.File(self.path, 'r',) as hdf:
             group = hdf[fname]
             img = torch.from_numpy(group['image'][:]).float()
             obj_class = group['obj_class'][:].astype(np.int64)
             obj_bbox = group['obj_bbox'][:].astype(np.float32)
+            print(obj_bbox)
             relationships = group['relationships'][:]
             attributes = group['attributes'][:]
 
         # Create the various nodes and edges
-        H, W = self._create_image_nodes(data, img)
-        data = self._create_instance_nodes(data, obj_class)
+        data = self._create_image_nodes(data, img)
+        data = self._create_instance_nodes(data, obj_class, obj_bbox)
         data = self._create_attribute_nodes(data, attributes)
         data = self._create_relationship_edges(data, relationships)
-        data = self._create_instance_to_image_edges(data, obj_bbox, H, W)
+        data = self._create_instance_to_image_edges(data, obj_bbox,)
 
+        data.caption = torch.mean(data['instance_node'].x, dim=0, keepdim=True) # take average of clip latents for instances in image
+        if torch.isnan(data.caption).any():
+            data.caption = torch.zeros((1, self.latent_dim), dtype=torch.float32)
+
+        data.fname = fname
         return data
         
     @property
@@ -437,3 +502,27 @@ def bbox_to_linear_indices(bbox, image_size):
     linear_indices = y_indices * W + x_indices
 
     return linear_indices
+
+
+
+
+class H5LatentReader:
+    def __init__(self, vocab_path):
+        self.vocab_path = vocab_path
+        self.file = None
+
+    def __enter__(self):
+        self.file = h5py.File(self.vocab_path, 'r', libver='latest', swmr=True)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.file is not None:
+            self.file.close()
+
+    def get_vocab_latent(self, class_idx):
+        if self.file is None:
+            raise ValueError("File not opened. Use the context manager or explicitly open it.")
+        group = self.file.get('latents')
+        if group and str(class_idx) in group:
+            return torch.from_numpy(group[str(class_idx)][:]).to(torch.float32)
+        return torch.zeros((self.latent_dim), dtype=torch.float32)
